@@ -267,12 +267,9 @@ def refresh_everything(refiner_model_name, base_model_name, loras,
     return
 
 
-refresh_everything(
-    refiner_model_name=modules.config.default_refiner_model_name,
-    base_model_name=modules.config.default_base_model_name,
-    loras=get_enabled_loras(modules.config.default_loras),
-    vae_name=modules.config.default_vae,
-)
+# NOTE [Fooosti]: startup preload removed for memory reasons.
+# The worker calls refresh_everything() per task; models load on demand
+# and modules.memory.release_all() frees them after each generation.
 
 
 @torch.no_grad()
@@ -464,7 +461,7 @@ def process_diffusion(positive_cond, negative_cond, steps, switch, width, height
             previewer_end=steps,
             disable_preview=disable_preview
         )
-        print('Fooocus VAE-based swap.')
+        print('Fooosti VAE-based swap.')
 
         target_model = target_refiner_unet
         if target_model is None:

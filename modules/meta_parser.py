@@ -644,7 +644,7 @@ def get_exif(metadata: str | None, metadata_scheme: str):
     # 0x9286 = UserComment
     exif[0x9286] = metadata
     # 0x0131 = Software
-    exif[0x0131] = 'Fooocus v' + fooocus_version.version
+    exif[0x0131] = 'Fooosti v' + fooocus_version.version
     # 0x927C = MakerNote
     exif[0x927C] = metadata_scheme
     return exif

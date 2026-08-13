@@ -7,7 +7,7 @@ import shared
 import modules.config
 import fooocus_version
 import modules.html
-import modules.async_worker as worker
+import modules.remote_worker as worker
 import modules.constants as constants
 import modules.flags as flags
 import modules.gradio_hijack as grh
@@ -16,13 +16,14 @@ import modules.meta_parser
 import args_manager
 import copy
 import launch
-from extras.inpaint_mask import SAMOptions
-
 from modules.sdxl_styles import legal_style_names
 from modules.private_logger import get_current_html_path
 from modules.ui_gradio_extensions import reload_javascript
 from modules.auth import auth_enabled, check_auth
 from modules.util import is_json
+import modules.gradio_guard
+
+modules.gradio_guard.install(os.path.dirname(os.path.abspath(__file__)))
 
 def get_task(*args):
     args = list(args)
@@ -31,14 +32,22 @@ def get_task(*args):
     return worker.AsyncTask(args=args)
 
 def generate_clicked(task: worker.AsyncTask):
-    import ldm_patched.modules.model_management as model_management
-
-    with model_management.interrupt_processing_mutex:
-        model_management.interrupt_processing = False
     # outputs=[progress_html, progress_window, progress_gallery, gallery]
 
     if len(task.args) == 0:
         return
+
+    def yield_done(message=None):
+        # single reset point for every terminal state (finish/error/timeout);
+        # clears the task so a stale one cannot be re-run and collapses the UI
+        # back to the "idle" layout
+        task.args = []
+        if message is None:
+            return gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update()
+        return gr.update(visible=True, value=modules.html.make_progress_html(1, message)), \
+            gr.update(visible=True, value=None), \
+            gr.update(visible=False, value=None), \
+            gr.update(visible=False)
 
     execution_start_time = time.perf_counter()
     finished = False
@@ -50,8 +59,18 @@ def generate_clicked(task: worker.AsyncTask):
 
     worker.async_tasks.append(task)
 
+    watchdog_seconds = constants.FOOOSTI_GENERATION_TIMEOUT
+
     while not finished:
         time.sleep(0.01)
+        if time.perf_counter() - execution_start_time > watchdog_seconds:
+            # abort the stuck generation: interrupt first, then kill the worker
+            # so VRAM/RAM are actually freed and the next run gets a fresh one
+            worker.request_interrupt('stop')
+            worker.kill_worker()
+            yield yield_done('Generation timed out')
+            finished = True
+            break
         if len(task.yields) > 0:
             flag, product = task.yields.pop(0)
             if flag == 'preview':
@@ -81,12 +100,18 @@ def generate_clicked(task: worker.AsyncTask):
                     gr.update(visible=False), \
                     gr.update(visible=True, value=product)
                 finished = True
+                task.args = []
 
                 # delete Fooocus temp images, only keep gradio temp images
                 if args_manager.args.disable_image_log:
                     for filepath in product:
                         if isinstance(filepath, str) and os.path.exists(filepath):
                             os.remove(filepath)
+            if flag == 'error':
+                message = product if isinstance(product, str) else 'Generation failed'
+                yield yield_done(message)
+                finished = True
+                break
 
     execution_time = time.perf_counter() - execution_start_time
     print(f'Total time: {execution_time:.2f} seconds')
@@ -143,9 +168,182 @@ def inpaint_mode_change(mode, inpaint_engine_version):
     ]
 
 
+def build_enhance_panel():
+    """Builds the per-tab enhance (upscale) controls. Must be called inside
+    the enhance_input_panel gr.Row. The inpaint_mode .change bindings are
+    wired up later (bind_enhance_inpaint_modes) because they reference the
+    input-column controls, which do not exist yet at build time."""
+    with gr.Tabs():
+        with gr.Tab(label='Upscale or Variation'):
+            with gr.Row():
+                with gr.Column():
+                    enhance_uov_method = gr.Radio(label='Upscale or Variation:', choices=flags.uov_list,
+                                                  value=modules.config.default_enhance_uov_method)
+                    enhance_uov_processing_order = gr.Radio(label='Order of Processing',
+                                                            info='Use before to enhance small details and after to enhance large areas.',
+                                                            choices=flags.enhancement_uov_processing_order,
+                                                            value=modules.config.default_enhance_uov_processing_order)
+                    enhance_uov_prompt_type = gr.Radio(label='Prompt',
+                                                       info='Choose which prompt to use for Upscale or Variation.',
+                                                       choices=flags.enhancement_uov_prompt_types,
+                                                       value=modules.config.default_enhance_uov_prompt_type,
+                                                       visible=modules.config.default_enhance_uov_processing_order == flags.enhancement_uov_after)
+
+                    enhance_uov_processing_order.change(lambda x: gr.update(visible=x == flags.enhancement_uov_after),
+                                                        inputs=enhance_uov_processing_order,
+                                                        outputs=enhance_uov_prompt_type,
+                                                        queue=False, show_progress=False)
+                    gr.HTML('<a href="https://github.com/lllyasviel/Fooocus/discussions/3281" target="_blank">\U0001F4D4 Documentation</a>')
+        enhance_ctrls = []
+        enhance_inpaint_mode_ctrls = []
+        enhance_inpaint_engine_ctrls = []
+        enhance_inpaint_update_ctrls = []
+        for index in range(modules.config.default_enhance_tabs):
+            with gr.Tab(label=f'#{index + 1}') as enhance_tab_item:
+                enhance_enabled = gr.Checkbox(label='Enable', value=False, elem_classes='min_check',
+                                              container=False)
+
+                enhance_mask_dino_prompt_text = gr.Textbox(label='Detection prompt',
+                                                           info='Use singular whenever possible',
+                                                           placeholder='Describe what you want to detect.',
+                                                           interactive=True,
+                                                           visible=modules.config.default_enhance_inpaint_mask_model == 'sam')
+                example_enhance_mask_dino_prompt_text = gr.Dataset(
+                    samples=modules.config.example_enhance_detection_prompts,
+                    label='Detection Prompt Quick List',
+                    components=[enhance_mask_dino_prompt_text],
+                    visible=modules.config.default_enhance_inpaint_mask_model == 'sam')
+                example_enhance_mask_dino_prompt_text.click(lambda x: x[0],
+                                                            inputs=example_enhance_mask_dino_prompt_text,
+                                                            outputs=enhance_mask_dino_prompt_text,
+                                                            show_progress=False, queue=False)
+
+                enhance_prompt = gr.Textbox(label="Enhancement positive prompt",
+                                            placeholder="Uses original prompt instead if empty.",
+                                            elem_id='enhance_prompt')
+                enhance_negative_prompt = gr.Textbox(label="Enhancement negative prompt",
+                                                     placeholder="Uses original negative prompt instead if empty.",
+                                                     elem_id='enhance_negative_prompt')
+
+                with gr.Accordion("Detection", open=False):
+                    enhance_mask_model = gr.Dropdown(label='Mask generation model',
+                                                     choices=flags.inpaint_mask_models,
+                                                     value=modules.config.default_enhance_inpaint_mask_model)
+                    enhance_mask_cloth_category = gr.Dropdown(label='Cloth category',
+                                                              choices=flags.inpaint_mask_cloth_category,
+                                                              value=modules.config.default_inpaint_mask_cloth_category,
+                                                              visible=modules.config.default_enhance_inpaint_mask_model == 'u2net_cloth_seg',
+                                                              interactive=True)
+
+                    with gr.Accordion("SAM Options",
+                                      visible=modules.config.default_enhance_inpaint_mask_model == 'sam',
+                                      open=False) as sam_options:
+                        enhance_mask_sam_model = gr.Dropdown(label='SAM model',
+                                                             choices=flags.inpaint_mask_sam_model,
+                                                             value=modules.config.default_inpaint_mask_sam_model,
+                                                             interactive=True)
+                        enhance_mask_box_threshold = gr.Slider(label="Box Threshold", minimum=0.0,
+                                                               maximum=1.0, value=0.3, step=0.05,
+                                                               interactive=True)
+                        enhance_mask_text_threshold = gr.Slider(label="Text Threshold", minimum=0.0,
+                                                                maximum=1.0, value=0.25, step=0.05,
+                                                                interactive=True)
+                        enhance_mask_sam_max_detections = gr.Slider(label="Maximum number of detections",
+                                                                    info="Set to 0 to detect all",
+                                                                    minimum=0, maximum=10,
+                                                                    value=modules.config.default_sam_max_detections,
+                                                                    step=1, interactive=True)
+
+                with gr.Accordion("Inpaint", visible=True, open=False):
+                    enhance_inpaint_mode = gr.Dropdown(choices=modules.flags.inpaint_options,
+                                                       value=modules.config.default_inpaint_method,
+                                                       label='Method', interactive=True)
+                    enhance_inpaint_disable_initial_latent = gr.Checkbox(
+                        label='Disable initial latent in inpaint', value=False)
+                    enhance_inpaint_engine = gr.Dropdown(label='Inpaint Engine',
+                                                         value=modules.config.default_inpaint_engine_version,
+                                                         choices=flags.inpaint_engine_versions,
+                                                         info='Version of Fooosti inpaint model. If set, use performance Quality or Speed (no performance LoRAs) for best results.')
+                    enhance_inpaint_strength = gr.Slider(label='Inpaint Denoising Strength',
+                                                         minimum=0.0, maximum=1.0, step=0.001,
+                                                         value=1.0,
+                                                         info='Same as the denoising strength in A1111 inpaint. '
+                                                              'Only used in inpaint, not used in outpaint. '
+                                                              '(Outpaint always use 1.0)')
+                    enhance_inpaint_respective_field = gr.Slider(label='Inpaint Respective Field',
+                                                                 minimum=0.0, maximum=1.0, step=0.001,
+                                                                 value=0.618,
+                                                                 info='The area to inpaint. '
+                                                                      'Value 0 is same as "Only Masked" in A1111. '
+                                                                      'Value 1 is same as "Whole Image" in A1111. '
+                                                                      'Only used in inpaint, not used in outpaint. '
+                                                                      '(Outpaint always use 1.0)')
+                    enhance_inpaint_erode_or_dilate = gr.Slider(label='Mask Erode or Dilate',
+                                                                minimum=-64, maximum=64, step=1, value=0,
+                                                                info='Positive value will make white area in the mask larger, '
+                                                                     'negative value will make white area smaller. '
+                                                                     '(default is 0, always processed before any mask invert)')
+                    enhance_mask_invert = gr.Checkbox(label='Invert Mask', value=False)
+
+                gr.HTML('<a href="https://github.com/lllyasviel/Fooocus/discussions/3281" target="_blank">\U0001F4D4 Documentation</a>')
+
+            enhance_ctrls += [
+                enhance_enabled,
+                enhance_mask_dino_prompt_text,
+                enhance_prompt,
+                enhance_negative_prompt,
+                enhance_mask_model,
+                enhance_mask_cloth_category,
+                enhance_mask_sam_model,
+                enhance_mask_text_threshold,
+                enhance_mask_box_threshold,
+                enhance_mask_sam_max_detections,
+                enhance_inpaint_disable_initial_latent,
+                enhance_inpaint_engine,
+                enhance_inpaint_strength,
+                enhance_inpaint_respective_field,
+                enhance_inpaint_erode_or_dilate,
+                enhance_mask_invert
+            ]
+
+            enhance_inpaint_mode_ctrls += [enhance_inpaint_mode]
+            enhance_inpaint_engine_ctrls += [enhance_inpaint_engine]
+
+            enhance_inpaint_update_ctrls += [[
+                enhance_inpaint_mode, enhance_inpaint_disable_initial_latent, enhance_inpaint_engine,
+                enhance_inpaint_strength, enhance_inpaint_respective_field
+            ]]
+
+            enhance_mask_model.change(
+                lambda x: [gr.update(visible=x == 'u2net_cloth_seg')] +
+                          [gr.update(visible=x == 'sam')] * 2 +
+                          [gr.Dataset.update(visible=x == 'sam',
+                                             samples=modules.config.example_enhance_detection_prompts)],
+                inputs=enhance_mask_model,
+                outputs=[enhance_mask_cloth_category, enhance_mask_dino_prompt_text, sam_options,
+                         example_enhance_mask_dino_prompt_text],
+                queue=False, show_progress=False)
+
+    return (enhance_uov_method, enhance_uov_processing_order, enhance_uov_prompt_type,
+            enhance_ctrls, enhance_inpaint_mode_ctrls, enhance_inpaint_engine_ctrls,
+            enhance_inpaint_update_ctrls)
+
+
+def bind_enhance_inpaint_modes(inpaint_engine_state, inpaint_additional_prompt, outpaint_selections,
+                               example_inpaint_prompts, enhance_inpaint_update_ctrls):
+    """Wire per-tab inpaint_mode .change. Runs after the input column exists so
+    the cross-column outputs can be referenced. Fixes the regression where only
+    the last enhance tab was bound (loop-variable leak)."""
+    for mode, disable_initial_latent, engine, strength, respective_field in enhance_inpaint_update_ctrls:
+        mode.change(inpaint_mode_change, inputs=[mode, inpaint_engine_state], outputs=[
+            inpaint_additional_prompt, outpaint_selections, example_inpaint_prompts,
+            disable_initial_latent, engine, strength, respective_field
+        ], show_progress=False, queue=False)
+
+
 reload_javascript()
 
-title = f'Fooocus {fooocus_version.version}'
+title = f'Fooosti {fooocus_version.version}'
 
 if isinstance(args_manager.args.preset, str):
     title += ' ' + args_manager.args.preset
@@ -155,56 +353,10 @@ shared.gradio_root = gr.Blocks(title=title).queue()
 with shared.gradio_root:
     currentTask = gr.State(worker.AsyncTask(args=[]))
     inpaint_engine_state = gr.State('empty')
-    with gr.Row():
-        with gr.Column(scale=2):
-            with gr.Row():
-                progress_window = grh.Image(label='Preview', show_label=True, visible=False, height=768,
-                                            elem_classes=['main_view'])
-                progress_gallery = gr.Gallery(label='Finished Images', show_label=True, object_fit='contain',
-                                              height=768, visible=False, elem_classes=['main_view', 'image_gallery'])
-            progress_html = gr.HTML(value=modules.html.make_progress_html(32, 'Progress 32%'), visible=False,
-                                    elem_id='progress-bar', elem_classes='progress-bar')
-            gallery = gr.Gallery(label='Gallery', show_label=False, object_fit='contain', visible=True, height=768,
-                                 elem_classes=['resizable_area', 'main_view', 'final_gallery', 'image_gallery'],
-                                 elem_id='final_gallery')
-            with gr.Row():
-                with gr.Column(scale=17):
-                    prompt = gr.Textbox(show_label=False, placeholder="Type prompt here or paste parameters.", elem_id='positive_prompt',
-                                        autofocus=True, lines=3)
-
-                    default_prompt = modules.config.default_prompt
-                    if isinstance(default_prompt, str) and default_prompt != '':
-                        shared.gradio_root.load(lambda: default_prompt, outputs=prompt)
-
-                with gr.Column(scale=3, min_width=0):
-                    generate_button = gr.Button(label="Generate", value="Generate", elem_classes='type_row', elem_id='generate_button', visible=True)
-                    reset_button = gr.Button(label="Reconnect", value="Reconnect", elem_classes='type_row', elem_id='reset_button', visible=False)
-                    load_parameter_button = gr.Button(label="Load Parameters", value="Load Parameters", elem_classes='type_row', elem_id='load_parameter_button', visible=False)
-                    skip_button = gr.Button(label="Skip", value="Skip", elem_classes='type_row_half', elem_id='skip_button', visible=False)
-                    stop_button = gr.Button(label="Stop", value="Stop", elem_classes='type_row_half', elem_id='stop_button', visible=False)
-
-                    def stop_clicked(currentTask):
-                        import ldm_patched.modules.model_management as model_management
-                        currentTask.last_stop = 'stop'
-                        if (currentTask.processing):
-                            model_management.interrupt_current_processing()
-                        return currentTask
-
-                    def skip_clicked(currentTask):
-                        import ldm_patched.modules.model_management as model_management
-                        currentTask.last_stop = 'skip'
-                        if (currentTask.processing):
-                            model_management.interrupt_current_processing()
-                        return currentTask
-
-                    stop_button.click(stop_clicked, inputs=currentTask, outputs=currentTask, queue=False, show_progress=False, _js='cancelGenerateForever')
-                    skip_button.click(skip_clicked, inputs=currentTask, outputs=currentTask, queue=False, show_progress=False)
-            with gr.Row(elem_classes='advanced_check_row'):
-                input_image_checkbox = gr.Checkbox(label='Input Image', value=modules.config.default_image_prompt_checkbox, container=False, elem_classes='min_check')
-                enhance_checkbox = gr.Checkbox(label='Enhance', value=modules.config.default_enhance_checkbox, container=False, elem_classes='min_check')
-                advanced_checkbox = gr.Checkbox(label='Advanced', value=modules.config.default_advanced_checkbox, container=False, elem_classes='min_check')
-            with gr.Row(visible=modules.config.default_image_prompt_checkbox) as image_input_panel:
-                with gr.Tabs(selected=modules.config.default_selected_image_input_tab_id):
+    with gr.Row(elem_classes='fooosti_top_row'):
+        with gr.Column(scale=1, elem_classes="fooosti_input_column") as input_column:
+            with gr.Tabs(selected=modules.config.default_selected_image_input_tab_id,
+                         visible=modules.config.default_image_prompt_checkbox) as image_input_panel:
                     with gr.Tab(label='Upscale or Variation', id='uov_tab') as uov_tab:
                         with gr.Row():
                             with gr.Column():
@@ -299,7 +451,7 @@ with shared.gradio_root:
                                 generate_mask_button = gr.Button(value='Generate mask from image')
 
                                 def generate_mask(image, mask_model, cloth_category, dino_prompt_text, sam_model, box_threshold, text_threshold, sam_max_detections, dino_erode_or_dilate, dino_debug):
-                                    from extras.inpaint_mask import generate_mask_from_image
+                                    from extras.inpaint_mask import generate_mask_from_image, SAMOptions
 
                                     extras = {}
                                     sam_options = None
@@ -361,7 +513,7 @@ with shared.gradio_root:
 
                     with gr.Tab(label='Metadata', id='metadata_tab') as metadata_tab:
                         with gr.Column():
-                            metadata_input_image = grh.Image(label='For images created by Fooocus', source='upload', type='pil')
+                            metadata_input_image = grh.Image(label='For images created by Fooosti', source='upload', type='pil')
                             metadata_json = gr.JSON(label='Metadata')
                             metadata_import_button = gr.Button(value='Apply Metadata')
 
@@ -379,170 +531,9 @@ with shared.gradio_root:
 
                         metadata_input_image.upload(trigger_metadata_preview, inputs=metadata_input_image,
                                                     outputs=metadata_json, queue=False, show_progress=True)
-
-            with gr.Row(visible=modules.config.default_enhance_checkbox) as enhance_input_panel:
-                with gr.Tabs():
-                    with gr.Tab(label='Upscale or Variation'):
-                        with gr.Row():
-                            with gr.Column():
-                                enhance_uov_method = gr.Radio(label='Upscale or Variation:', choices=flags.uov_list,
-                                                              value=modules.config.default_enhance_uov_method)
-                                enhance_uov_processing_order = gr.Radio(label='Order of Processing',
-                                                                        info='Use before to enhance small details and after to enhance large areas.',
-                                                                        choices=flags.enhancement_uov_processing_order,
-                                                                        value=modules.config.default_enhance_uov_processing_order)
-                                enhance_uov_prompt_type = gr.Radio(label='Prompt',
-                                                                   info='Choose which prompt to use for Upscale or Variation.',
-                                                                   choices=flags.enhancement_uov_prompt_types,
-                                                                   value=modules.config.default_enhance_uov_prompt_type,
-                                                                   visible=modules.config.default_enhance_uov_processing_order == flags.enhancement_uov_after)
-
-                                enhance_uov_processing_order.change(lambda x: gr.update(visible=x == flags.enhancement_uov_after),
-                                                                    inputs=enhance_uov_processing_order,
-                                                                    outputs=enhance_uov_prompt_type,
-                                                                    queue=False, show_progress=False)
-                                gr.HTML('<a href="https://github.com/lllyasviel/Fooocus/discussions/3281" target="_blank">\U0001F4D4 Documentation</a>')
-                    enhance_ctrls = []
-                    enhance_inpaint_mode_ctrls = []
-                    enhance_inpaint_engine_ctrls = []
-                    enhance_inpaint_update_ctrls = []
-                    for index in range(modules.config.default_enhance_tabs):
-                        with gr.Tab(label=f'#{index + 1}') as enhance_tab_item:
-                            enhance_enabled = gr.Checkbox(label='Enable', value=False, elem_classes='min_check',
-                                                          container=False)
-
-                            enhance_mask_dino_prompt_text = gr.Textbox(label='Detection prompt',
-                                                                       info='Use singular whenever possible',
-                                                                       placeholder='Describe what you want to detect.',
-                                                                       interactive=True,
-                                                                       visible=modules.config.default_enhance_inpaint_mask_model == 'sam')
-                            example_enhance_mask_dino_prompt_text = gr.Dataset(
-                                samples=modules.config.example_enhance_detection_prompts,
-                                label='Detection Prompt Quick List',
-                                components=[enhance_mask_dino_prompt_text],
-                                visible=modules.config.default_enhance_inpaint_mask_model == 'sam')
-                            example_enhance_mask_dino_prompt_text.click(lambda x: x[0],
-                                                                        inputs=example_enhance_mask_dino_prompt_text,
-                                                                        outputs=enhance_mask_dino_prompt_text,
-                                                                        show_progress=False, queue=False)
-
-                            enhance_prompt = gr.Textbox(label="Enhancement positive prompt",
-                                                        placeholder="Uses original prompt instead if empty.",
-                                                        elem_id='enhance_prompt')
-                            enhance_negative_prompt = gr.Textbox(label="Enhancement negative prompt",
-                                                                 placeholder="Uses original negative prompt instead if empty.",
-                                                                 elem_id='enhance_negative_prompt')
-
-                            with gr.Accordion("Detection", open=False):
-                                enhance_mask_model = gr.Dropdown(label='Mask generation model',
-                                                                 choices=flags.inpaint_mask_models,
-                                                                 value=modules.config.default_enhance_inpaint_mask_model)
-                                enhance_mask_cloth_category = gr.Dropdown(label='Cloth category',
-                                                                          choices=flags.inpaint_mask_cloth_category,
-                                                                          value=modules.config.default_inpaint_mask_cloth_category,
-                                                                          visible=modules.config.default_enhance_inpaint_mask_model == 'u2net_cloth_seg',
-                                                                          interactive=True)
-
-                                with gr.Accordion("SAM Options",
-                                                  visible=modules.config.default_enhance_inpaint_mask_model == 'sam',
-                                                  open=False) as sam_options:
-                                    enhance_mask_sam_model = gr.Dropdown(label='SAM model',
-                                                                         choices=flags.inpaint_mask_sam_model,
-                                                                         value=modules.config.default_inpaint_mask_sam_model,
-                                                                         interactive=True)
-                                    enhance_mask_box_threshold = gr.Slider(label="Box Threshold", minimum=0.0,
-                                                                           maximum=1.0, value=0.3, step=0.05,
-                                                                           interactive=True)
-                                    enhance_mask_text_threshold = gr.Slider(label="Text Threshold", minimum=0.0,
-                                                                            maximum=1.0, value=0.25, step=0.05,
-                                                                            interactive=True)
-                                    enhance_mask_sam_max_detections = gr.Slider(label="Maximum number of detections",
-                                                                                info="Set to 0 to detect all",
-                                                                                minimum=0, maximum=10,
-                                                                                value=modules.config.default_sam_max_detections,
-                                                                                step=1, interactive=True)
-
-                            with gr.Accordion("Inpaint", visible=True, open=False):
-                                enhance_inpaint_mode = gr.Dropdown(choices=modules.flags.inpaint_options,
-                                                                   value=modules.config.default_inpaint_method,
-                                                                   label='Method', interactive=True)
-                                enhance_inpaint_disable_initial_latent = gr.Checkbox(
-                                    label='Disable initial latent in inpaint', value=False)
-                                enhance_inpaint_engine = gr.Dropdown(label='Inpaint Engine',
-                                                                     value=modules.config.default_inpaint_engine_version,
-                                                                     choices=flags.inpaint_engine_versions,
-                                                                     info='Version of Fooocus inpaint model. If set, use performance Quality or Speed (no performance LoRAs) for best results.')
-                                enhance_inpaint_strength = gr.Slider(label='Inpaint Denoising Strength',
-                                                                     minimum=0.0, maximum=1.0, step=0.001,
-                                                                     value=1.0,
-                                                                     info='Same as the denoising strength in A1111 inpaint. '
-                                                                          'Only used in inpaint, not used in outpaint. '
-                                                                          '(Outpaint always use 1.0)')
-                                enhance_inpaint_respective_field = gr.Slider(label='Inpaint Respective Field',
-                                                                             minimum=0.0, maximum=1.0, step=0.001,
-                                                                             value=0.618,
-                                                                             info='The area to inpaint. '
-                                                                                  'Value 0 is same as "Only Masked" in A1111. '
-                                                                                  'Value 1 is same as "Whole Image" in A1111. '
-                                                                                  'Only used in inpaint, not used in outpaint. '
-                                                                                  '(Outpaint always use 1.0)')
-                                enhance_inpaint_erode_or_dilate = gr.Slider(label='Mask Erode or Dilate',
-                                                                            minimum=-64, maximum=64, step=1, value=0,
-                                                                            info='Positive value will make white area in the mask larger, '
-                                                                                 'negative value will make white area smaller. '
-                                                                                 '(default is 0, always processed before any mask invert)')
-                                enhance_mask_invert = gr.Checkbox(label='Invert Mask', value=False)
-
-                            gr.HTML('<a href="https://github.com/lllyasviel/Fooocus/discussions/3281" target="_blank">\U0001F4D4 Documentation</a>')
-
-                        enhance_ctrls += [
-                            enhance_enabled,
-                            enhance_mask_dino_prompt_text,
-                            enhance_prompt,
-                            enhance_negative_prompt,
-                            enhance_mask_model,
-                            enhance_mask_cloth_category,
-                            enhance_mask_sam_model,
-                            enhance_mask_text_threshold,
-                            enhance_mask_box_threshold,
-                            enhance_mask_sam_max_detections,
-                            enhance_inpaint_disable_initial_latent,
-                            enhance_inpaint_engine,
-                            enhance_inpaint_strength,
-                            enhance_inpaint_respective_field,
-                            enhance_inpaint_erode_or_dilate,
-                            enhance_mask_invert
-                        ]
-
-                        enhance_inpaint_mode_ctrls += [enhance_inpaint_mode]
-                        enhance_inpaint_engine_ctrls += [enhance_inpaint_engine]
-
-                        enhance_inpaint_update_ctrls += [[
-                            enhance_inpaint_mode, enhance_inpaint_disable_initial_latent, enhance_inpaint_engine,
-                            enhance_inpaint_strength, enhance_inpaint_respective_field
-                        ]]
-
-                        enhance_inpaint_mode.change(inpaint_mode_change, inputs=[enhance_inpaint_mode, inpaint_engine_state], outputs=[
-                            inpaint_additional_prompt, outpaint_selections, example_inpaint_prompts,
-                            enhance_inpaint_disable_initial_latent, enhance_inpaint_engine,
-                            enhance_inpaint_strength, enhance_inpaint_respective_field
-                        ], show_progress=False, queue=False)
-
-                        enhance_mask_model.change(
-                            lambda x: [gr.update(visible=x == 'u2net_cloth_seg')] +
-                                      [gr.update(visible=x == 'sam')] * 2 +
-                                      [gr.Dataset.update(visible=x == 'sam',
-                                                         samples=modules.config.example_enhance_detection_prompts)],
-                            inputs=enhance_mask_model,
-                            outputs=[enhance_mask_cloth_category, enhance_mask_dino_prompt_text, sam_options,
-                                     example_enhance_mask_dino_prompt_text],
-                            queue=False, show_progress=False)
-
             switch_js = "(x) => {if(x){viewer_to_bottom(100);viewer_to_bottom(500);}else{viewer_to_top();} return x;}"
             down_js = "() => {viewer_to_bottom();}"
 
-            input_image_checkbox.change(lambda x: gr.update(visible=x), inputs=input_image_checkbox,
-                                        outputs=image_input_panel, queue=False, show_progress=False, _js=switch_js)
             ip_advanced.change(lambda: None, queue=False, show_progress=False, _js=down_js)
 
             current_tab = gr.Textbox(value='uov', visible=False)
@@ -552,10 +543,61 @@ with shared.gradio_root:
             describe_tab.select(lambda: 'desc', outputs=current_tab, queue=False, _js=down_js, show_progress=False)
             enhance_tab.select(lambda: 'enhance', outputs=current_tab, queue=False, _js=down_js, show_progress=False)
             metadata_tab.select(lambda: 'metadata', outputs=current_tab, queue=False, _js=down_js, show_progress=False)
-            enhance_checkbox.change(lambda x: gr.update(visible=x), inputs=enhance_checkbox,
-                                        outputs=enhance_input_panel, queue=False, show_progress=False, _js=switch_js)
+        with gr.Column(scale=5, elem_classes='fooosti_main_col'):
+            with gr.Row():
+                progress_window = grh.Image(label='Preview', show_label=True, visible=False, height=768,
+                                            elem_classes=['main_view'])
+                progress_gallery = gr.Gallery(label='Finished Images', show_label=True, object_fit='contain',
+                                              height=768, visible=False, elem_classes=['main_view', 'image_gallery'])
+            progress_html = gr.HTML(value=modules.html.make_progress_html(32, 'Progress 32%'), visible=False,
+                                    elem_id='progress-bar', elem_classes='progress-bar')
+            gallery = gr.Gallery(label='Gallery', show_label=False, object_fit='contain', visible=True, height=768,
+                                 elem_classes=['main_view', 'final_gallery', 'image_gallery'],
+                                 elem_id='final_gallery')
+            with gr.Row():
+                with gr.Column(scale=17):
+                    prompt = gr.Textbox(show_label=False, placeholder="Type prompt here or paste parameters.", elem_id='positive_prompt',
+                                        autofocus=True, lines=3)
 
-        with gr.Column(scale=1, visible=modules.config.default_advanced_checkbox) as advanced_column:
+                    default_prompt = modules.config.default_prompt
+                    if isinstance(default_prompt, str) and default_prompt != '':
+                        shared.gradio_root.load(lambda: default_prompt, outputs=prompt)
+
+                with gr.Column(scale=3, min_width=0):
+                    generate_button = gr.Button(label="Generate", value="Generate", elem_classes='type_row', elem_id='generate_button', visible=True)
+                    reset_button = gr.Button(label="Reconnect", value="Reconnect", elem_classes='type_row', elem_id='reset_button', visible=False)
+                    load_parameter_button = gr.Button(label="Load Parameters", value="Load Parameters", elem_classes='type_row', elem_id='load_parameter_button', visible=False)
+                    skip_button = gr.Button(label="Skip", value="Skip", elem_classes='type_row_half', elem_id='skip_button', visible=False)
+                    stop_button = gr.Button(label="Stop", value="Stop", elem_classes='type_row_half', elem_id='stop_button', visible=False)
+
+                    def stop_clicked(currentTask):
+                        worker.request_interrupt('stop')
+                        return currentTask
+
+                    def skip_clicked(currentTask):
+                        worker.request_interrupt('skip')
+                        return currentTask
+
+                    stop_button.click(stop_clicked, inputs=currentTask, outputs=currentTask, queue=False, show_progress=False, _js='cancelGenerateForever')
+                    skip_button.click(skip_clicked, inputs=currentTask, outputs=currentTask, queue=False, show_progress=False)
+            with gr.Row(elem_classes='advanced_check_row'):
+                input_image_checkbox = gr.Checkbox(label='Input Image', value=modules.config.default_image_prompt_checkbox, container=False, elem_classes='min_check', elem_id='input_image_checkbox')
+                enhance_checkbox = gr.Checkbox(label='Enhance', value=modules.config.default_enhance_checkbox, container=False, elem_classes='min_check', elem_id='enhance_checkbox')
+                advanced_checkbox = gr.Checkbox(label='Advanced', value=modules.config.default_advanced_checkbox, container=False, elem_classes='min_check', elem_id='advanced_checkbox')
+            with gr.Row(visible=modules.config.default_enhance_checkbox, elem_classes='enhance_input_panel') as enhance_input_panel:
+                (enhance_uov_method, enhance_uov_processing_order, enhance_uov_prompt_type,
+                 enhance_ctrls, enhance_inpaint_mode_ctrls, enhance_inpaint_engine_ctrls,
+                 enhance_inpaint_update_ctrls) = build_enhance_panel()
+
+            bind_enhance_inpaint_modes(inpaint_engine_state, inpaint_additional_prompt, outpaint_selections,
+                                       example_inpaint_prompts, enhance_inpaint_update_ctrls)
+        input_image_checkbox.change(lambda x: gr.update(visible=x), inputs=input_image_checkbox,
+                                    outputs=input_column, queue=False, show_progress=False, _js=switch_js)
+        enhance_checkbox.change(lambda x: gr.update(visible=x), inputs=enhance_checkbox,
+                                outputs=enhance_input_panel, queue=False, show_progress=False, _js=switch_js)
+
+
+        with gr.Column(scale=1, visible=modules.config.default_advanced_checkbox, elem_classes='fooosti_settings_col') as advanced_column:
             with gr.Tab(label='Settings'):
                 if not args_manager.args.disable_preset_selection:
                     preset_selection = gr.Dropdown(label='Preset',
@@ -566,19 +608,21 @@ with shared.gradio_root:
                 performance_selection = gr.Radio(label='Performance',
                                                  choices=flags.Performance.values(),
                                                  value=modules.config.default_performance,
-                                                 elem_classes=['performance_selection'])
+                                                 elem_id='performance_selection',
+                                                 elem_classes='performance_selection')
 
                 with gr.Accordion(label='Aspect Ratios', open=False, elem_id='aspect_ratios_accordion') as aspect_ratios_accordion:
                     aspect_ratios_selection = gr.Radio(label='Aspect Ratios', show_label=False,
                                                        choices=modules.config.available_aspect_ratios_labels,
                                                        value=modules.config.default_aspect_ratio,
                                                        info='width × height',
+                                                       elem_id='aspect_ratios_selection',
                                                        elem_classes='aspect_ratios')
 
-                    aspect_ratios_selection.change(lambda x: None, inputs=aspect_ratios_selection, queue=False, show_progress=False, _js='(x)=>{refresh_aspect_ratios_label(x);}')
-                    shared.gradio_root.load(lambda x: None, inputs=aspect_ratios_selection, queue=False, show_progress=False, _js='(x)=>{refresh_aspect_ratios_label(x);}')
+                    aspect_ratios_selection.change(lambda x: None, inputs=aspect_ratios_selection, queue=False, show_progress=False, _js='(x)=>{refresh_aspect_ratios_label(x); set_preview_ratio(x);}')
+                    shared.gradio_root.load(lambda x: None, inputs=aspect_ratios_selection, queue=False, show_progress=False, _js='(x)=>{refresh_aspect_ratios_label(x); set_preview_ratio(x);}')
 
-                image_number = gr.Slider(label='Image Number', minimum=1, maximum=modules.config.default_max_image_number, step=1, value=modules.config.default_image_number)
+                image_number = gr.Slider(label='Image Number', minimum=1, maximum=modules.config.default_max_image_number, step=1, value=modules.config.default_image_number, elem_id='image_number')
 
                 output_format = gr.Radio(label='Output Format',
                                          choices=flags.OutputFormat.list(),
@@ -631,6 +675,7 @@ with shared.gradio_root:
                                                     choices=copy.deepcopy(style_sorter.all_styles),
                                                     value=copy.deepcopy(modules.config.default_styles),
                                                     label='Selected Styles',
+                                                    elem_id='style_selections',
                                                     elem_classes=['style_selections'])
                 gradio_receiver_style_selections = gr.Textbox(elem_id='gradio_receiver_style_selections', visible=False)
 
@@ -710,7 +755,7 @@ with shared.gradio_root:
 
                         adaptive_cfg = gr.Slider(label='CFG Mimicking from TSNR', minimum=1.0, maximum=30.0, step=0.01,
                                                  value=modules.config.default_cfg_tsnr,
-                                                 info='Enabling Fooocus\'s implementation of CFG mimicking for TSNR '
+                                                 info='Enabling Fooosti\'s implementation of CFG mimicking for TSNR '
                                                       '(effective when real CFG > mimicked CFG).')
                         clip_skip = gr.Slider(label='CLIP Skip', minimum=1, maximum=flags.clip_skip_max, step=1,
                                                  value=modules.config.default_clip_skip,
@@ -815,7 +860,7 @@ with shared.gradio_root:
                         inpaint_engine = gr.Dropdown(label='Inpaint Engine',
                                                      value=modules.config.default_inpaint_engine_version,
                                                      choices=flags.inpaint_engine_versions,
-                                                     info='Version of Fooocus inpaint model. If set, use performance Quality or Speed (no performance LoRAs) for best results.')
+                                                     info='Version of Fooosti inpaint model. If set, use performance Quality or Speed (no performance LoRAs) for best results.')
                         inpaint_strength = gr.Slider(label='Inpaint Denoising Strength',
                                                      minimum=0.0, maximum=1.0, step=0.001, value=1.0,
                                                      info='Same as the denoising strength in A1111 inpaint. '

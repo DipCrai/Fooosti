@@ -10,4 +10,5 @@ progress_html = '''
 
 
 def make_progress_html(number, text):
-    return progress_html.replace('*number*', str(number)).replace('*text*', text)
+    import html as _html
+    return progress_html.replace('*number*', str(number)).replace('*text*', _html.escape(str(text)))

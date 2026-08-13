@@ -1,4 +1,5 @@
 import os
+import html
 import args_manager
 import modules.config
 import json
@@ -11,6 +12,7 @@ from modules.meta_parser import MetadataParser, get_exif
 from modules.util import generate_temp_filename
 
 log_cache = {}
+MAX_LOG_CACHE_ENTRIES = 200
 
 
 def get_current_html_path(output_format=None):
@@ -91,7 +93,7 @@ def log(img, metadata, metadata_parser: MetadataParser | None = None, output_for
         </script>"""
     )
 
-    begin_part = f"<!DOCTYPE html><html><head><title>Fooocus Log {date_string}</title>{css_styles}</head><body>{js}<p>Fooocus Log {date_string} (private)</p>\n<p>Metadata is embedded if enabled in the config or developer debug mode. You can find the information for each image in line Metadata Scheme.</p><!--fooocus-log-split-->\n\n"
+    begin_part = f"<!DOCTYPE html><html><head><title>Fooosti Log {date_string}</title>{css_styles}</head><body>{js}<p>Fooosti Log {date_string} (private)</p>\n<p>Metadata is embedded if enabled in the config or developer debug mode. You can find the information for each image in line Metadata Scheme.</p><!--fooocus-log-split-->\n\n"
     end_part = f'\n<!--fooocus-log-split--></body></html>'
 
     middle_part = log_cache.get(html_name, "")
@@ -104,17 +106,19 @@ def log(img, metadata, metadata_parser: MetadataParser | None = None, output_for
             else:
                 middle_part = existing_split[0]
 
-    div_name = only_name.replace('.', '_')
+    div_name = html.escape(only_name.replace('.', '_'))
     item = f"<div id=\"{div_name}\" class=\"image-container\"><hr><table><tr>\n"
-    item += f"<td><a href=\"{only_name}\" target=\"_blank\"><img src='{only_name}' onerror=\"this.closest('.image-container').style.display='none';\" loading='lazy'/></a><div>{only_name}</div></td>"
+    item += f"<td><a href=\"{html.escape(only_name)}\" target=\"_blank\"><img src='{html.escape(only_name)}' onerror=\"this.closest('.image-container').style.display='none';\" loading='lazy'/></a><div>{html.escape(only_name)}</div></td>"
     item += "<td><table class='metadata'>"
     for label, key, value in metadata:
-        value_txt = str(value).replace('\n', ' </br> ')
-        item += f"<tr><td class='label'>{label}</td><td class='value'>{value_txt}</td></tr>\n"
+        value_txt = html.escape(str(value)).replace('\n', ' </br> ')
+        item += f"<tr><td class='label'>{html.escape(str(label))}</td><td class='value'>{value_txt}</td></tr>\n"
 
     if task is not None and 'positive' in task and 'negative' in task:
-        full_prompt_details = f"""<details><summary>Positive</summary>{', '.join(task['positive'])}</details>
-        <details><summary>Negative</summary>{', '.join(task['negative'])}</details>"""
+        pos = ', '.join(html.escape(str(p)) for p in task['positive'])
+        neg = ', '.join(html.escape(str(n)) for n in task['negative'])
+        full_prompt_details = f"""<details><summary>Positive</summary>{pos}</details>
+        <details><summary>Negative</summary>{neg}</details>"""
         item += f"<tr><td class='label'>Full raw prompt</td><td class='value'>{full_prompt_details}</td></tr>\n"
 
     item += "</table>"
@@ -133,5 +137,8 @@ def log(img, metadata, metadata_parser: MetadataParser | None = None, output_for
     print(f'Image generated with private log at: {html_name}')
 
     log_cache[html_name] = middle_part
+    if len(log_cache) > MAX_LOG_CACHE_ENTRIES:
+        for k in list(log_cache)[:len(log_cache) - MAX_LOG_CACHE_ENTRIES]:
+            log_cache.pop(k, None)
 
     return local_temp_filename

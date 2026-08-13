@@ -83,12 +83,24 @@ div:has(> #positive_prompt) {
     background: var(--background-fill-primary);
 }
 
+#positive_prompt textarea,
+#negative_prompt textarea {
+    resize: none !important;
+    overflow-y: auto;
+    max-height: 84px !important;
+}
+
 .type_row {
   height: 84px !important;
 }
 
 .type_row_half {
   height: 34px !important;
+}
+
+/* gradio's "Use via API" footer button is never needed here */
+button.show-api {
+  display: none !important;
 }
 
 .refresh_button {
@@ -104,11 +116,6 @@ div:has(> #positive_prompt) {
 
 .min_check {
   min-width: min(1px, 100%) !important;
-}
-
-.resizable_area {
-  resize: vertical;
-  overflow: auto !important;
 }
 
 .performance_selection label {
@@ -415,4 +422,288 @@ div:has(> #positive_prompt) {
 
 #inpaint_brush_color input[type=color]{
   background: none;
+}
+
+/* ---- Fooosti: shared layout constants (magic pixels live here, once) ---- */
+:root {
+  --fooosti-nav-height: 76px;       /* page chrome: top bar + paddings */
+  --fooosti-prompts-slot: 620px;    /* space reserved below the main view for prompt row + progress bar */
+  --fooosti-prompts-slot-collapsed: 240px; /* same, when the enhance panel is hidden */
+  --fooosti-prompt-row: 86px;       /* prompt block height while the progress bar floats over it */
+  --fooosti-gap: 16px;              /* column gap between prompt row and progress bar */
+  --fooosti-prompt-overlap: 102px;  /* prompt row negative margin = bar height + gap */
+  --fooosti-progress-reserve: 130px;/* progress bar keeps clear of Stop/Skip buttons */
+}
+
+/* ---- Fooosti: main view (final gallery + generation preview) fits the column ---- */
+.fooosti_main_col .main_view:not(.hidden) {
+  height: auto !important;
+  width: min(100%, calc((100vh - var(--fooosti-prompts-slot)) * var(--fooosti-aspect, 1))) !important;
+  aspect-ratio: var(--fooosti-aspect, 1);
+  max-height: calc(100vh - var(--fooosti-prompts-slot)) !important;
+  margin: 0 auto !important;
+  flex: none !important;
+}
+
+/* enhance plate hidden -> main view can use the freed space (gallery grows, prompt moves down) */
+.fooosti_main_col:has(.enhance_input_panel.hide, .enhance_input_panel.hidden) .main_view:not(.hidden) {
+  max-height: calc(100vh - var(--fooosti-prompts-slot-collapsed)) !important;
+  width: min(100%, calc((100vh - var(--fooosti-prompts-slot-collapsed)) * var(--fooosti-aspect, 1))) !important;
+}
+
+/* the preview wrap collapses to 0px height when hidden but still leaves a 16px
+   column gap -> gallery would sit 16px lower. Drop the wrap only when the
+   progress block (its first .main_view child) is hidden; the second .main_view
+   child stays hidden forever, so target :first-child specifically. */
+.fooosti_main_col > div:first-child:has(> .main_view:first-child.hidden) {
+  display: none !important;
+}
+
+/* ---- Fooosti: during generation the gradio progress bar takes over the prompt
+   field. The prompt row itself is left untouched: only the prompt field column
+   becomes invisible (keeping its height and flex share), so the buttons column
+   keeps the exact idle width == Generate width and nothing below shifts. The
+   bar block (which gets a `hidden` class when idle) is pulled out of the flow
+   and floats over the prompt field area; the row's buttons stay visible above
+   it. ---- */
+.fooosti_main_col:has(.block.progress-bar:not(.hidden)) > div:has(#positive_prompt) > div:has(#positive_prompt) {
+  visibility: hidden !important;
+}
+/* the bar stays in normal flow (86px); the prompt row overlaps it with a
+   negative margin (86px bar + 16px column gap) so both occupy the same slot
+   and nothing below shifts. The prompt field column keeps its flex share
+   (visibility hidden), so the buttons column keeps the idle width == Generate. */
+.fooosti_main_col:has(.block.progress-bar:not(.hidden)) > div:has(#positive_prompt) {
+  margin-top: calc(-1 * var(--fooosti-prompt-overlap)) !important;
+  pointer-events: none !important;
+}
+.fooosti_main_col:has(.block.progress-bar:not(.hidden)) > div:has(#positive_prompt) > div:has(#generate_button) {
+  pointer-events: auto !important;
+  justify-content: center !important;
+}
+.fooosti_main_col .block.progress-bar:not(.hidden) {
+  height: var(--fooosti-prompt-row) !important;
+  min-height: var(--fooosti-prompt-row) !important;
+  max-height: var(--fooosti-prompt-row) !important;
+  overflow: hidden !important;
+  padding: 0 !important;
+}
+.fooosti_main_col .block.progress-bar:not(.hidden) .wrap {
+  display: none !important;
+}
+.fooosti_main_col .block.progress-bar:not(.hidden) > div:last-child {
+  height: 100% !important;
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: center !important;
+  padding: 0 !important;
+}
+/* gradio gives the prose a 96px min-height -> it sticks out of the prompt-row
+   slot and gets clipped; reset it so the loader container centers inside */
+.fooosti_main_col .block.progress-bar:not(.hidden) .prose.progress-bar {
+  min-height: 0 !important;
+  height: auto !important;
+}
+/* wheel flush against the left edge, bar on top-right, text under the bar;
+   keep clear of the Stop/Skip buttons at the right end */
+.fooosti_main_col .block.progress-bar:not(.hidden) .loader-container {
+  display: grid !important;
+  grid-template-columns: auto minmax(0, 1fr) !important;
+  grid-template-rows: auto auto !important;
+  column-gap: 10px !important;
+  row-gap: 2px !important;
+  align-items: center !important;
+  width: calc(100% - var(--fooosti-progress-reserve)) !important;
+  padding: 0 !important;
+}
+.fooosti_main_col .block.progress-bar:not(.hidden) .loader {
+  grid-column: 1 !important;
+  grid-row: 1 / 3 !important;
+  justify-self: start !important;
+  align-self: center !important;
+  position: static !important;
+  left: auto !important;
+  top: auto !important;
+  margin: 0 !important;
+}
+.fooosti_main_col .block.progress-bar:not(.hidden) .progress-container {
+  grid-column: 2 !important;
+  grid-row: 1 !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+}
+.fooosti_main_col .block.progress-bar:not(.hidden) .progress-container progress {
+  width: 100% !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+}
+.fooosti_main_col .block.progress-bar:not(.hidden) .loader-container > span {
+  grid-column: 2 !important;
+  grid-row: 2 !important;
+  min-width: 0 !important;
+  width: 100% !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+/* ---- Fooosti: three-column layout (Input Image left, Main center, Settings right) ---- */
+.fooosti_top_row {
+  /* the three columns sit side by side, split by scale; the media query
+     below stacks them on narrow screens */
+  flex-wrap: wrap !important;
+  /* fixed height so switching tabs never resizes the row / page */
+  height: calc(100vh - var(--fooosti-nav-height)) !important;
+}
+.fooosti_input_column {
+  order: 1;
+}
+.fooosti_main_col {
+  order: 2;
+}
+.fooosti_settings_col {
+  order: 3;
+}
+
+/* columns never grow taller than the screen: tall content scrolls inside the column */
+.fooosti_main_col,
+.fooosti_input_column,
+.fooosti_settings_col {
+  flex-wrap: nowrap !important;
+  min-height: 0 !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  max-height: calc(100vh - var(--fooosti-nav-height)) !important;
+}
+
+/* keep column tab bars visible while their content scrolls */
+.fooosti_main_col .tab-nav,
+.fooosti_input_column .tab-nav,
+.fooosti_settings_col .tab-nav {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 10 !important;
+  background: var(--block-background-fill, #fff) !important;
+}
+
+/* tab content scrolls inside itself (below its own tab bar) instead of
+   stretching the column: tab labels stay fixed and content can never
+   slide up over them; columns no longer over-scroll by the nav height */
+.fooosti_main_col > .tabs,
+.fooosti_input_column > .tabs,
+.fooosti_settings_col > .tabs,
+.fooosti_input_column .tabs,
+.enhance_input_panel > .tabs {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  flex-wrap: nowrap !important;
+}
+.fooosti_main_col > .tabs > .tabitem,
+.fooosti_input_column > .tabs > .tabitem,
+.fooosti_settings_col > .tabs > .tabitem,
+.enhance_input_panel > .tabs > .tabitem {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  padding-bottom: 14px !important;
+}
+
+/* the input column now holds its Tabs directly, exactly like the settings
+   column: the tabs fill the column and tab content scrolls under the
+   tab bar here too (Image Prompt etc.) */
+
+/* enhance panel keeps its natural height and never stretches to fill the
+   whole column; the image prompt panel below takes the leftover */
+.enhance_input_panel {
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  flex-direction: column !important;
+}
+.enhance_input_panel > .tabs {
+  overflow: hidden !important;
+}
+
+/* tall lists scroll inside themselves (like styles) instead of stretching the column */
+#aspect_ratios_selection .wrap {
+  max-height: 40vh !important;
+  overflow-y: auto !important;
+  align-content: flex-start !important;
+  padding-bottom: 12px !important;
+}
+
+/* ---- Fooosti: compact enhance (upscale) panel ---- */
+.enhance_input_panel .wrap label {
+  flex: calc(50% - 5px) !important;
+}
+
+/* keep the Generate button in the prompt row at every width: cap its min-width
+   and let the prompt column shrink so the row never wraps below ~1450px where
+   the three-column layout still squeezes the main column */
+#generate_button {
+  min-width: 100px !important;
+}
+.fooosti_main_col > div:has(#positive_prompt) > div:has(#generate_button) {
+  flex: 0 1 auto !important;
+  min-width: 100px !important;
+  max-width: none !important;
+}
+.fooosti_main_col > div:has(#positive_prompt) > div:has(#positive_prompt) {
+  flex: 17 1 0% !important;
+  min-width: 0 !important;
+}
+
+/* ---- Fooosti: responsive layout ---- */
+@media (max-width: 1100px) {
+  .fooosti_top_row {
+    flex-direction: column !important;
+    height: auto !important;
+  }
+  .fooosti_top_row > div {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+  /* narrow screens stack the columns in DOM order */
+  .fooosti_main_col,
+  .fooosti_input_column,
+  .fooosti_settings_col {
+    order: 0 !important;
+  }
+  .fooosti_main_col .tab-nav,
+  .fooosti_input_column .tab-nav,
+  .fooosti_settings_col .tab-nav {
+    position: static !important;
+  }
+  .fooosti_main_col > .tabs,
+  .fooosti_input_column > .tabs,
+  .fooosti_settings_col > .tabs,
+  .fooosti_input_column .tabs,
+  .enhance_input_panel > .tabs {
+    display: block !important;
+    flex: none !important;
+  }
+  .fooosti_main_col > .tabs > .tabitem,
+  .fooosti_input_column > .tabs > .tabitem,
+  .fooosti_settings_col > .tabs > .tabitem,
+  .enhance_input_panel > .tabs > .tabitem {
+    flex: none !important;
+    overflow: visible !important;
+    padding-bottom: 0 !important;
+  }
+  .fooosti_input_column > .tabs {
+    display: block !important;
+    flex: none !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+  }
 }

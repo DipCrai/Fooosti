@@ -4,11 +4,12 @@ volumes:
 services:
   app:
     build: .
-    image: ghcr.io/lllyasviel/fooocus
-    ports:
-     - "7865:7865"
+    image: fooosti:latest
+    # host network: CMDARGS binds loopback, so 7865/8890 are reachable on the
+    # host (bridge ports + loopback bind would make both unreachable)
+    network_mode: host
     environment:
-      - CMDARGS=--listen    # Arguments for launch.py.
+      - CMDARGS=--listen 127.0.0.1 --port 8890   # Arguments for launch_both.py.
       - DATADIR=/content/data   # Directory which stores models, outputs dir
       - config_path=/content/data/config.txt
       - config_example_path=/content/data/config_modification_tutorial.txt
