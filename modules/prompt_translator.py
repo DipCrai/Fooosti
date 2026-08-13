@@ -23,7 +23,7 @@ _SYSTEM_PROMPT = (
     'Keep it as a single paragraph. Do not add explanations. Output only the rewritten prompt.'
 )
 
-_MAX_NEW_TOKENS = 180
+_MAX_NEW_TOKENS = 90
 
 
 def _looks_english(text: str) -> bool:
@@ -90,7 +90,7 @@ def _run(user_text: str) -> str:
         with torch.inference_mode():
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=90,
+                max_new_tokens=_MAX_NEW_TOKENS,
                 do_sample=True,
                 temperature=0.8,
                 top_p=0.9,

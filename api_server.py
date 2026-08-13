@@ -134,7 +134,9 @@ def _submit_task(req: Txt2ImgRequest) -> dict:
 
     task_dict = req.model_dump()
     # resolve the model here from the current config.txt so a change made via
-    # POST /sdapi/v1/options applies to the next request even with a warm worker
+    # POST /sdapi/v1/options applies to the next request even with a warm worker.
+    # Never let a raw name escape the checkpoints dir: strip any path components.
+    task_dict['base_model_name'] = os.path.basename(task_dict['base_model_name'] or '')
     task_dict['base_model_name'] = task_dict['base_model_name'] or _default_checkpoint()
 
     msg = {'task': task_dict, 'resp_file': resp_file,
