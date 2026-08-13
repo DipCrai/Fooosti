@@ -13,9 +13,9 @@ def rss_mb():
     return -1
 
 
-def release_all():
+def release_all(force=False):
     global _keep_warm_warned
-    if KEEP_WARM:
+    if KEEP_WARM and not force:
         if not _keep_warm_warned:
             _keep_warm_warned = True
             print('[Fooosti] WARNING: FOOOSTI_KEEPALIVE_MINUTES>0 keeps the worker warm, '

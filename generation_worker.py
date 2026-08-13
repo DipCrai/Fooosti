@@ -30,7 +30,7 @@ def _set_pdeathsig():
 _set_pdeathsig()
 
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
-os.environ["PYTORCH_MPS_HIGH_WATERMARK_RANGE"] = "0.0"
+os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
 
 from args_manager import args
 from modules import config
@@ -81,6 +81,10 @@ os.makedirs(OUT_DIR, exist_ok=True)
 # stop/interrupt control channel, shared with modules/remote_worker.py
 STOP_DIR = os.environ.get('FOOOSTI_TMP_DIR', constants.FOOOSTI_TMP_DIR)
 os.makedirs(STOP_DIR, exist_ok=True)
+
+# True while a generation is in progress; SIGTERM (parent kill) must not touch
+# torch state mid-sampling, so release_all is skipped in that case
+_busy_generating = False
 
 
 def build_task_args(req: dict) -> list:
@@ -222,33 +226,107 @@ def build_task_args(req: dict) -> list:
     return task_args
 
 
-def run_task(task_dict: dict, resp_file: str):
+def _poll_interval():
+    # sub-second so Stop/Skip/interrupt land within one diffusion step boundary
+    return 0.05
+
+
+def run_task(task_dict: dict, resp_file: str, task_id: str = '', progress_file: str = ''):
+    global _busy_generating
     import numpy as np
     from PIL import Image
     from modules import async_worker
     from modules.async_worker import AsyncTask
+    import ldm_patched.modules.model_management as model_management
 
     resp = {'ok': False}
+    done = threading.Event()
+    task = None
+
+    def watcher():
+        stop_file = os.path.join(STOP_DIR, f'stop_{task_id}')
+        while not done.is_set():
+            if os.path.exists(stop_file):
+                try:
+                    with open(stop_file) as f:
+                        value = f.read().strip() or 'stop'
+                except Exception:
+                    value = 'stop'
+                try:
+                    os.remove(stop_file)
+                except Exception:
+                    pass
+                if task is not None:
+                    task.last_stop = value
+                model_management.interrupt_current_processing()
+                break
+            time.sleep(_poll_interval())
+
+    def progress_reporter():
+        t0 = time.perf_counter()
+        last_img_t = 0.0
+        seen = 0
+        while not done.is_set():
+            # scan only newly-appended yields (avoids the O(n^2) re-scan)
+            while seen < len(task.yields):
+                item = task.yields[seen]
+                seen += 1
+                if item[0] == 'preview':
+                    pct, _text, img = item[1]
+                    entry = {
+                        'progress': min(max(float(pct), 0.0), 100.0) / 100.0,
+                        'eta_relative': 0.0,
+                        'current_image': None,
+                    }
+                    now = time.perf_counter()
+                    if img is not None and now - last_img_t >= 1.0:
+                        last_img_t = now
+                        entry['current_image'] = _encode_preview(img)
+                    p = entry['progress']
+                    elapsed = now - t0
+                    if p > 0.01:
+                        entry['eta_relative'] = elapsed / p * (1.0 - p)
+                    _atomic_write(progress_file, json.dumps(entry))
+            time.sleep(_poll_interval())
+
     try:
         t0 = time.perf_counter()
         args_list = build_task_args(task_dict)
         task = AsyncTask(args=args_list)
+
+        # clear a leftover interrupt flag before the watcher can observe anything
+        model_management.interrupt_current_processing(False)
+
+        if task_id:
+            threading.Thread(target=watcher, daemon=True).start()
+        if progress_file:
+            threading.Thread(target=progress_reporter, daemon=True).start()
+
+        _busy_generating = True
         async_worker.async_tasks.append(task)
 
         deadline = time.time() + float(os.environ.get('FOOOSTI_GENERATION_TIMEOUT') or str(constants.FOOOSTI_GENERATION_TIMEOUT))
         error = None
+        done_polling = False
+        seen = 0
         while time.time() < deadline:
-            for yield_item in task.yields:
-                if yield_item[0] == 'finish':
+            while seen < len(task.yields):
+                item = task.yields[seen]
+                seen += 1
+                if item[0] == 'finish':
+                    done_polling = True
                     break
-                if yield_item[0] == 'error':
-                    error = yield_item[1] if len(yield_item) > 1 else 'Generation failed'
+                if item[0] == 'error':
+                    error = item[1] if len(item) > 1 else 'Generation failed'
+                    done_polling = True
                     break
-            else:
-                time.sleep(0.2)
-                continue
-            break
+            if done_polling:
+                break
+            time.sleep(_poll_interval())
         else:
+            # interrupt the worker so the orphaned generation settles quickly
+            # instead of running to completion behind the next request
+            model_management.interrupt_current_processing(True)
             raise TimeoutError('Fooosti generation timed out')
 
         if error is not None:
@@ -270,12 +348,36 @@ def run_task(task_dict: dict, resp_file: str):
     except Exception as e:
         traceback.print_exc()
         resp = {'ok': False, 'error': str(e)}
+    finally:
+        _busy_generating = False
+        done.set()
 
-    tmp = resp_file + '.tmp'
-    with open(tmp, 'w') as f:
-        json.dump(resp, f)
-    os.replace(tmp, resp_file)
+    _atomic_write(resp_file, json.dumps(resp))
     return resp
+
+
+def _atomic_write(path, data):
+    tmp = path + '.tmp'
+    with open(tmp, 'w') as f:
+        f.write(data)
+    os.replace(tmp, path)
+
+
+def _encode_preview(img, max_dim=512):
+    import base64
+    import cv2
+    import numpy as np
+    try:
+        h, w = img.shape[:2]
+        scale = min(1.0, max_dim / max(h, w))
+        if scale < 1.0:
+            img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+        ok, buf = cv2.imencode('.jpg', cv2.cvtColor(img, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 80])
+        if ok:
+            return base64.b64encode(buf.tobytes()).decode()
+    except Exception:
+        pass
+    return None
 
 
 def _deserialize_value(a):
@@ -328,19 +430,22 @@ def run_task_stream(task_id: str, args_list: list):
                 import ldm_patched.modules.model_management
                 ldm_patched.modules.model_management.interrupt_current_processing()
                 break
-            time.sleep(0.2)
+            time.sleep(_poll_interval())
 
     timeout = float(os.environ.get('FOOOSTI_GENERATION_TIMEOUT') or str(constants.FOOOSTI_GENERATION_TIMEOUT))
     deadline = time.time() + timeout
 
     try:
         task = AsyncTask(args=_deserialize_args(args_list))
-        threading.Thread(target=watcher, daemon=True).start()
 
         # clear a leftover interrupt flag so it cannot abort this fresh task
         import ldm_patched.modules.model_management
         ldm_patched.modules.model_management.interrupt_current_processing(False)
 
+        threading.Thread(target=watcher, daemon=True).start()
+
+        global _busy_generating
+        _busy_generating = True
         async_worker.async_tasks.append(task)
 
         while True:
@@ -379,10 +484,25 @@ def run_task_stream(task_id: str, args_list: list):
         except Exception:
             pass
     finally:
+        _busy_generating = False
         done.set()
 
 
+def _sigterm_handler(signum, frame):
+    # the parent kills us when keepalive expires (or after a task when
+    # keepalive=0); free VRAM/RAM explicitly rather than relying on process exit
+    try:
+        if not _busy_generating:
+            import modules.memory
+            modules.memory.release_all(force=True)
+    except Exception:
+        pass
+    os._exit(0)
+
+
 def main():
+    import signal
+    signal.signal(signal.SIGTERM, _sigterm_handler)
     print('[Fooosti] worker ready, waiting for tasks', flush=True)
     for line in sys.stdin:
         line = line.strip()
@@ -400,7 +520,9 @@ def main():
             if not resp_file:
                 continue
             print(f"[Fooosti] running task ...", flush=True)
-            run_task(task_dict, resp_file)
+            run_task(task_dict, resp_file,
+                     task_id=msg.get('id') or '',
+                     progress_file=msg.get('progress_file') or '')
             print(f"[Fooosti] task done -> {resp_file}", flush=True)
         except Exception as e:
             traceback.print_exc()

@@ -103,6 +103,18 @@ button.show-api {
   display: none !important;
 }
 
+/* hide the dot separator and center gradio's footer */
+footer > div {
+  display: none !important;
+}
+footer {
+  display: flex !important;
+  justify-content: center !important;
+  align-items: center !important;
+  width: 100% !important;
+  text-align: center !important;
+}
+
 .refresh_button {
   border: none !important;
   background: none !important;
@@ -672,11 +684,15 @@ button.show-api {
     max-height: none !important;
     overflow: visible !important;
   }
-  /* narrow screens stack the columns in DOM order */
-  .fooosti_main_col,
-  .fooosti_input_column,
+  /* narrow screens stack the columns: preview first, then input, then settings */
+  .fooosti_main_col {
+    order: 1 !important;
+  }
+  .fooosti_input_column {
+    order: 2 !important;
+  }
   .fooosti_settings_col {
-    order: 0 !important;
+    order: 3 !important;
   }
   .fooosti_main_col .tab-nav,
   .fooosti_input_column .tab-nav,

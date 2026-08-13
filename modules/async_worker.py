@@ -1472,12 +1472,8 @@ def worker():
                 if task.generate_image_grid:
                     build_image_wall(task)
                 task.yields.append(['finish', task.results])
-                import modules.memory
-                modules.memory.release_all()
             except Exception as e:
                 traceback.print_exc()
-                import modules.memory
-                modules.memory.release_all()
                 task.yields.append(['error', str(e)])
             finally:
                 if pid in modules.patch.patch_settings:

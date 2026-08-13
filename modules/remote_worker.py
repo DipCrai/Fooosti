@@ -141,7 +141,7 @@ def _kill():
         _events_thread = None
 
 
-def _guarded_write(proc, line, timeout=60):
+def _guarded_write(proc, line, timeout=15):
     ok = [False]
     err = []
 
@@ -177,13 +177,10 @@ def _serialize_value(a):
             raise ValueError(f'unsupported array for worker IPC: shape={a.shape} dtype={a.dtype}')
         if arr.dtype != np.uint8:
             if arr.dtype in (np.float32, np.float64):
-                _mx = float(arr.max())
-                if _mx <= 1.0:
+                if float(arr.max()) <= 1.0:
+                    # normalized 0..1 float image -> pixel range
                     arr = arr * 255.0
-                elif _mx <= 255.0:
-                    # float maps in pixel range (e.g. a 0..2 mask): normalize so
-                    # the max becomes white instead of a near-black cast
-                    arr = arr * (255.0 / _mx)
+                # floats already in pixel range (0..255) pass through untouched
                 arr = np.clip(arr, 0, 255)
             arr = arr.astype(np.uint8)
         if arr.shape[2] == 4:
@@ -253,13 +250,16 @@ def request_interrupt(value):
     """Write an explicit interrupt value ('stop' or 'skip') for every running
     task. Unlike mutating the frontend's gr.State copy, this targets the live
     worker tasks directly, so Stop/Skip buttons work regardless of gr.State
-    serialization."""
+    serialization. The lock is released before touching the filesystem so a
+    stuck worker stdin cannot delay the Stop/Skip buttons."""
     with _lock:
-        for tid, task in list(_tasks.items()):
-            if task.processing:
-                task.last_stop = value
-                with open(_interrupt_file(tid), 'w') as f:
-                    f.write(str(value))
+        running = [tid for tid, task in _tasks.items() if task.processing]
+    for tid in running:
+        try:
+            with open(_interrupt_file(tid), 'w') as f:
+                f.write(str(value))
+        except Exception:
+            pass
 
 
 def kill_worker():

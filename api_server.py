@@ -34,6 +34,8 @@ _worker = None
 _worker_lock = threading.RLock()
 _busy = False
 _last_activity = 0.0
+_current_task_id = None
+_current_progress_file = None
 
 
 class _BusyError(Exception):
@@ -95,12 +97,18 @@ def _read_resp_file(resp_file: str) -> dict:
         return json.load(f)
 
 
-def _cleanup_failed(resp_file: str):
+def _cleanup_failed(resp_file: str, progress_file: str = ''):
     try:
         if os.path.exists(resp_file):
             os.remove(resp_file)
     except Exception:
         pass
+    if progress_file:
+        try:
+            if os.path.exists(progress_file):
+                os.remove(progress_file)
+        except Exception:
+            pass
     # orphaned ndarray outputs the worker wrote into TEMP_DIR on a failed job
     import glob
     try:
@@ -113,11 +121,26 @@ def _cleanup_failed(resp_file: str):
         pass
 
 
-def _submit_task(req: Txt2ImgRequest) -> dict:
-    global _last_activity, _busy
-    resp_file = os.path.join(OUT_DIR, f'resp_{uuid.uuid4().hex}.json')
+def _remove_stop_file(task_id):
+    try:
+        os.remove(os.path.join(OUT_DIR, f'stop_{task_id}'))
+    except Exception:
+        pass
 
-    msg = {'task': req.model_dump(), 'resp_file': resp_file}
+
+def _submit_task(req: Txt2ImgRequest) -> dict:
+    global _last_activity, _busy, _current_task_id, _current_progress_file
+    task_id = uuid.uuid4().hex
+    resp_file = os.path.join(OUT_DIR, f'resp_{task_id}.json')
+    progress_file = os.path.join(OUT_DIR, f'progress_{task_id}.json')
+
+    task_dict = req.model_dump()
+    # resolve the model here from the current config.txt so a change made via
+    # POST /sdapi/v1/options applies to the next request even with a warm worker
+    task_dict['base_model_name'] = task_dict['base_model_name'] or _default_checkpoint()
+
+    msg = {'task': task_dict, 'resp_file': resp_file,
+           'id': task_id, 'progress_file': progress_file}
 
     # run in an executor thread; the lock is held only for the check+set and
     # never across the generation, so the event loop stays responsive and the
@@ -126,10 +149,13 @@ def _submit_task(req: Txt2ImgRequest) -> dict:
         if _busy:
             raise _BusyError('generation already in progress')
         _busy = True
+        _current_task_id = task_id
+        _current_progress_file = progress_file
         _last_activity = time.time()
 
     try:
         worker = None
+        timed_out = False
         for attempt in range(2):
             worker = _get_worker()
             try:
@@ -156,26 +182,58 @@ def _submit_task(req: Txt2ImgRequest) -> dict:
                 raise RuntimeError(f'generation worker died (pid={worker.pid})')
             time.sleep(0.3)
 
+        # the worker's own deadline fires a moment later; drop the stop file now
+        # so the orphaned generation is interrupted at the next 50ms poll
+        timed_out = True
+        try:
+            with open(os.path.join(OUT_DIR, f'stop_{task_id}'), 'w') as f:
+                f.write('stop')
+        except Exception:
+            pass
         raise TimeoutError('Fooosti generation timed out')
     except Exception:
-        _cleanup_failed(resp_file)
+        _cleanup_failed(resp_file, progress_file)
         raise
     finally:
         with _worker_lock:
             _busy = False
+            _current_task_id = None
+            _current_progress_file = None
             _last_activity = time.time()
             if KEEPALIVE_MINUTES <= 0:
                 _kill_worker()
+                _remove_stop_file(task_id)
+            elif not timed_out:
+                _remove_stop_file(task_id)
+
+
+def _user_config_path():
+    return os.environ.get('config_path', os.path.join(os.environ.get('DATADIR', '/content/data'), 'config.txt'))
 
 
 def _user_config():
-    cfg_path = os.environ.get('config_path', os.path.join(os.environ.get('DATADIR', '/content/data'), 'config.txt'))
     try:
-        with open(cfg_path, 'r', encoding='utf-8') as f:
+        with open(_user_config_path(), 'r', encoding='utf-8') as f:
             cfg = json.load(f)
             return cfg if isinstance(cfg, dict) else {}
     except Exception:
         return {}
+
+
+def _persist_config(delta: dict):
+    cfg = {}
+    try:
+        with open(_user_config_path(), 'r', encoding='utf-8') as f:
+            cfg = json.load(f)
+    except Exception:
+        cfg = {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    cfg.update(delta)
+    tmp = _user_config_path() + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=4)
+    os.replace(tmp, _user_config_path())
 
 
 def _checkpoints_dir():
@@ -246,9 +304,110 @@ def options():
     }
 
 
+@app.post('/sdapi/v1/options', dependencies=[Depends(_require_api_token)])
+def set_options(payload: dict):
+    """A1111-compatible: accept a full options dict, persist what we support.
+    Open WebUI switches the model by POSTing the dict it got from GET."""
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail='options must be a JSON object')
+    delta = {}
+    if payload.get('sd_model_checkpoint'):
+        delta['default_model'] = payload['sd_model_checkpoint']
+    if delta:
+        try:
+            _persist_config(delta)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f'failed to persist config: {e}')
+    return options()
+
+
 @app.get('/sdapi/v1/sd-models', dependencies=[Depends(_require_api_token)])
 def sd_models():
     return [{'title': m, 'model_name': m, 'hash': ''} for m in _checkpoint_filenames()]
+
+
+def _write_stop(value: str):
+    with _worker_lock:
+        tid = _current_task_id
+    if tid:
+        try:
+            with open(os.path.join(OUT_DIR, f'stop_{tid}'), 'w') as f:
+                f.write(value)
+        except Exception:
+            pass
+
+
+@app.post('/sdapi/v1/interrupt', dependencies=[Depends(_require_api_token)])
+def interrupt():
+    """Interrupt the in-flight generation (A1111-compatible)."""
+    _write_stop('stop')
+    return {}
+
+
+@app.post('/sdapi/v1/skip', dependencies=[Depends(_require_api_token)])
+def skip():
+    """Skip the current image of the in-flight generation (A1111-compatible)."""
+    _write_stop('skip')
+    return {}
+
+
+@app.get('/sdapi/v1/progress', dependencies=[Depends(_require_api_token)])
+def progress(skip_current_image: bool = False):
+    """Live progress of the in-flight generation (A1111-compatible)."""
+    with _worker_lock:
+        tid = _current_task_id
+        pfile = _current_progress_file
+        busy = _busy
+    state = {
+        'skipped': False,
+        'interrupted': False,
+        'job': 'txt2img',
+        'job_count': 1,
+        'job_no': 0,
+        'job_timestamp': '',
+        'sampling_step': 0,
+        'sampling_steps': 0,
+    }
+    if not busy or not tid or not pfile:
+        return {'progress': 0.0, 'eta_relative': 0.0, 'state': state, 'current_image': None}
+    try:
+        with open(pfile) as f:
+            data = json.load(f)
+        return {
+            'progress': data.get('progress', 0.0),
+            'eta_relative': data.get('eta_relative', 0.0),
+            'state': state,
+            'current_image': None if skip_current_image else data.get('current_image'),
+        }
+    except Exception:
+        return {'progress': 0.0, 'eta_relative': 0.0, 'state': state, 'current_image': None}
+
+
+def _temp_sweep():
+    # remove leftover resp_*/progress_*/api_* scratch files (client aborts, kills)
+    import glob
+    while True:
+        time.sleep(300)
+        now = time.time()
+        patterns = [
+            (os.path.join(OUT_DIR, 'resp_*.json'), 3600),
+            (os.path.join(OUT_DIR, 'progress_*.json'), 3600),
+            (os.path.join(OUT_DIR, 'stop_*'), 3600),
+            (os.path.join(TEMP_DIR, 'api_*.png'), 3600),
+        ]
+        for pattern, max_age in patterns:
+            try:
+                for p in glob.glob(pattern):
+                    try:
+                        if now - os.path.getmtime(p) > max_age:
+                            os.remove(p)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+
+threading.Thread(target=_temp_sweep, daemon=True).start()
 
 
 @app.post('/sdapi/v1/txt2img', dependencies=[Depends(_require_api_token)])
@@ -258,6 +417,11 @@ async def txt2img(req: Txt2ImgRequest):
         resp = await asyncio.get_running_loop().run_in_executor(None, _submit_task, req)
     except _BusyError:
         return JSONResponse({'detail': 'generation already in progress'}, status_code=429)
+    except TimeoutError as e:
+        # the worker was already interrupted on our side; keep it alive so the
+        # orphaned generation settles and the next request reuses the warm worker
+        print(f'[Fooosti] generation timed out: {e}', flush=True)
+        return JSONResponse({'detail': str(e)}, status_code=500)
     except Exception as e:
         traceback.print_exc()
         _kill_worker()
@@ -284,6 +448,7 @@ async def txt2img(req: Txt2ImgRequest):
 
     result = {
         'images': images,
+        'parameters': req.model_dump(),
         'info': json.dumps({'prompt': req.prompt}),
     }
     return JSONResponse(result)

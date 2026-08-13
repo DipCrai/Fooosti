@@ -56,16 +56,32 @@ def install(app_root):
             kept_routes.append(route)
         app.routes[:] = kept_routes
         if pred_endpoint is not None:
-            username_default = inspect.signature(pred_endpoint).parameters['username'].default
+            # the queue worker calls POST /api/predict internally
+            # (queueing.Queue.call_prediction); gradio's signature can change
+            # across versions, so fall back to calling without 'username'
+            try:
+                params = inspect.signature(pred_endpoint).parameters
+                username_default = params['username'].default if 'username' in params else None
+            except Exception:
+                username_default = None
 
-            async def fooosti_api_predict(body: _gr_routes.PredictBody,
-                                          request: _gr_routes.fastapi.Request,
-                                          username=username_default):
-                return await pred_endpoint(api_name='predict', body=body,
-                                           request=request, username=username)
+            if username_default is not None:
+                async def fooosti_api_predict(body: _gr_routes.PredictBody,
+                                              request: _gr_routes.fastapi.Request,
+                                              username=username_default):
+                    return await pred_endpoint(api_name='predict', body=body,
+                                               request=request, username=username)
+            else:
+                async def fooosti_api_predict(body: _gr_routes.PredictBody,
+                                              request: _gr_routes.fastapi.Request):
+                    return await pred_endpoint(api_name='predict', body=body, request=request)
 
             app.add_api_route('/api/predict', fooosti_api_predict, methods=['POST'],
                               dependencies=pred_deps, include_in_schema=False)
+        else:
+            print('[Fooosti] WARNING: gradio /api/{api_name} route not found - '
+                  'gradio version changed, /api/predict was NOT re-registered. '
+                  'The UI queue may be broken.', flush=True)
 
         # never serve sensitive files/dirs via /file=
         blocks.blocked_paths = list(blocks.blocked_paths or []) + _blocked_paths(app_root)
