@@ -657,6 +657,12 @@ def worker():
                                                           modules.config.default_max_lora_number,
                                                           lora_filenames=lora_filenames)
         loras += async_task.performance_loras
+        if modules.config.enable_prompt_translator:
+            from modules.prompt_translator import translate_and_enhance
+            translated = translate_and_enhance(prompt)
+            if translated != prompt:
+                print(f'[Prompt Translator] {prompt!r} -> {translated!r}')
+                prompt = translated
         pipeline.refresh_everything(refiner_model_name=async_task.refiner_model_name,
                                     base_model_name=async_task.base_model_name,
                                     loras=loras, base_model_additional_loras=base_model_additional_loras,

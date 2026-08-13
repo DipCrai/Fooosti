@@ -3,7 +3,6 @@ import base64
 import hmac
 import json
 import os
-import subprocess
 import threading
 import time
 import traceback
@@ -14,7 +13,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
-from modules import constants, worker_proc
+from modules import config, constants, worker_proc
 
 OUT_DIR = os.environ.get('FOOOSTI_TMP_DIR', constants.FOOOSTI_TMP_DIR)
 KEEPALIVE_MINUTES = int(os.environ.get('FOOOSTI_KEEPALIVE_MINUTES', '0') or '0')
@@ -65,8 +64,7 @@ def _spawn_worker():
     # the API worker must not write into the WebUI's history log or outputs,
     # and must use our own scratch dir so cleanup is predictable
     _worker = worker_proc.spawn('--disable-image-log', '--disable-metadata',
-                                '--temp-path', TEMP_DIR,
-                                stdout=subprocess.DEVNULL)
+                                '--temp-path', TEMP_DIR)
     print(f'[Fooosti] worker spawned pid={_worker.pid}', flush=True)
     return _worker
 
@@ -141,6 +139,13 @@ def _submit_task(req: Txt2ImgRequest) -> dict:
 
     msg = {'task': task_dict, 'resp_file': resp_file,
            'id': task_id, 'progress_file': progress_file}
+
+    # the prompt translator model is downloaded by the main process (mirrors
+    # launch.py), never by the worker; make sure it is present before spawning
+    if config.enable_prompt_translator:
+        from modules.prompt_translator import is_available, download
+        if not is_available():
+            download()
 
     # run in an executor thread; the lock is held only for the check+set and
     # never across the generation, so the event loop stays responsive and the

@@ -109,6 +109,10 @@ def download_models(default_model, previous_default_models, checkpoint_downloads
         file_name='pytorch_model.bin'
     )
 
+    if config.enable_prompt_translator:
+        from modules.prompt_translator import download
+        download()
+
     if args.disable_preset_download:
         print('Skipped model download.')
         return default_model, checkpoint_downloads
