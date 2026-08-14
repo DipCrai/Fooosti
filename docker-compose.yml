@@ -7,7 +7,7 @@
 # lives in ~/Fooosti (data/ + docker-compose.yml, build context = this repo).
 #
 # Useful flags (CMDARGS):  --only-api / --only-webui
-#   --api-port 8890 (API)  --webui-port 7865  --listen 127.0.0.1|0.0.0.0
+#   --api-port 8890  --webui-port 7865  --listen 127.0.0.1|0.0.0.0
 volumes:
   fooocus-data:
 
