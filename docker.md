@@ -1,8 +1,8 @@
 # Fooosti on Docker
 
-The docker image is based on NVIDIA CUDA 12.4 and PyTorch 2.1, see [Dockerfile](Dockerfile) and [requirements_docker.txt](requirements_docker.txt) for details.
+The docker image inherits CUDA 12.4 and PyTorch 2.1 from the upstream image `ghcr.io/lllyasviel/fooocus:edge` it is built on; see [Dockerfile](Dockerfile) and [requirements_docker.txt](requirements_docker.txt) for details.
 
-This is a fork of Fooocus tuned to run as a background service: the image runs `launch.py`, which starts the WebUI (7865), the API (8890) and a shared generation worker through a single queue manager. The image is built locally from this repository — there is no published image to pull, so start with [Building the container locally](#building-the-container-locally).
+This is a fork of Fooocus tuned to run as a background service: the image runs `launch.py`, which starts the WebUI (7865), the API (8890) and a shared generation worker through a single queue manager. The image is built locally from this repository (no published `fooosti` image); the build pulls the upstream `fooocus:edge` base, see [Building the container locally](#building-the-container-locally).
 
 ## Requirements
 
@@ -110,7 +110,7 @@ Since `/content/data` is a persistent volume folder, your files will be persiste
 
 You can change `config.txt` parameters by using environment variables. Environment variables take priority over the values in `config.txt`. On startup, the Python config module writes `config_modification_tutorial.txt` as a reference of all recognised keys.
 
-Docker specified environments are there. They are used by 'entrypoint_api.sh'
+Environment variables recognised by the Python modules on startup:
 |Environment|Details|
 |-|-|
 |DATADIR|'/content/data' location.|
@@ -130,5 +130,4 @@ See examples in the [docker-compose.yml](docker-compose.yml)
 
 - Please keep 'path_outputs' under '/content/app'. Otherwise, you may get an error when you open the history log.
 - Docker on Mac/Windows still has issues in the form of slow volume access when you use "bind mount" volumes. Please refer to [this article](https://docs.docker.com/storage/volumes/#use-a-volume-with-docker-compose) for not using "bind mount".
-- The MPS backend (Metal Performance Shaders, Apple Silicon M1/M2/etc.) is not yet supported in Docker, see https://github.com/pytorch/pytorch/issues/81224
 - You can also use `docker compose up -d` to start the container detached and connect to the logs with `docker compose logs -f`. This way you can also close the terminal and keep the container running.
