@@ -31,7 +31,15 @@ mklink outputs
 # Import old files
 import outputs
 
-# Start Fooosti: torch-free API main (8890, generation via subprocess worker)
-# and optional WebUI (7865). Disable WebUI with FOOOSTI_WEBUI=0.
+# Start Fooosti: torch-free API main (8890) and optional WebUI (7865) via a
+# single queue manager + shared generation worker. Disable WebUI with
+# FOOOSTI_WEBUI=0, or run only one server with --only-api/--only-webui.
 echo '[Fooosti] starting launcher (api=8890 webui=7865, webui='"${FOOOSTI_WEBUI:-1}"')'
-python launch_both.py $*
+
+# Forward termination signals to the python launcher so the worker gets a
+# chance to release VRAM/RAM on docker stop instead of being SIGKILLed.
+_term() { kill -TERM "$child" 2>/dev/null; }
+trap _term TERM INT
+python launch.py $* &
+child=$!
+wait "$child"

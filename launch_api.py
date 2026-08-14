@@ -1,11 +1,14 @@
 import os
 import sys
 
-print('[Fooosti Main System ARGV] ' + str(sys.argv))
-
 root = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(root)
 os.chdir(root)
+
+from modules import ipc
+ipc.init()
+
+print('[Fooosti Main System ARGV] ' + str(sys.argv))
 
 from args_manager import args
 

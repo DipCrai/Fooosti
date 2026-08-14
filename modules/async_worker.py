@@ -215,6 +215,11 @@ def worker():
     def progressbar(async_task, number, text):
         print(f'[Fooosti] {text}')
         async_task.yields.append(['preview', (number, text, None)])
+        if async_task.last_stop is not False:
+            # stop/skip must apply instantly, not only inside the sampler loop:
+            # this is the phase boundary checkpoint (loading/encoding/preparing)
+            ldm_patched.modules.model_management.interrupt_current_processing()
+            raise ldm_patched.modules.model_management.InterruptProcessingException()
 
     def yield_result(async_task, imgs, progressbar_index, black_out_nsfw, censor=True, do_not_show_finished_images=False):
         if not isinstance(imgs, list):
@@ -659,10 +664,12 @@ def worker():
         loras += async_task.performance_loras
         if modules.config.enable_prompt_translator:
             from modules.prompt_translator import translate_and_enhance
+            progressbar(async_task, current_progress, 'Translating prompt ...')
             translated = translate_and_enhance(prompt)
             if translated != prompt:
                 print(f'[Prompt Translator] {prompt!r} -> {translated!r}')
                 prompt = translated
+        progressbar(async_task, current_progress, 'Loading model weights ...')
         pipeline.refresh_everything(refiner_model_name=async_task.refiner_model_name,
                                     base_model_name=async_task.base_model_name,
                                     loras=loras, base_model_additional_loras=base_model_additional_loras,
@@ -1477,6 +1484,10 @@ def worker():
                 handler(task)
                 if task.generate_image_grid:
                     build_image_wall(task)
+                task.yields.append(['finish', task.results])
+            except ldm_patched.modules.model_management.InterruptProcessingException:
+                # interrupted outside the sampler loop (see progressbar): clean
+                # stop/skip, not an error
                 task.yields.append(['finish', task.results])
             except Exception as e:
                 traceback.print_exc()

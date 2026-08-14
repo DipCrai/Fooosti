@@ -1,3 +1,13 @@
+# Base compose for running the service from a clone of this repo.
+#   docker compose up -d --build
+# Starts the queue manager + shared generation worker + API (8890) + WebUI
+# (7865), all inside one container (see launch.py).
+#
+# The maintainer's own machine does NOT deploy from here: the live deployment
+# lives in ~/Fooosti (data/ + docker-compose.yml, build context = this repo).
+#
+# Useful flags (CMDARGS):  --only-api / --only-webui
+#   --port 8890 (API)  --webui-port 7865  --listen 127.0.0.1|0.0.0.0
 volumes:
   fooocus-data:
 
@@ -9,7 +19,7 @@ services:
     # host (bridge ports + loopback bind would make both unreachable)
     network_mode: host
     environment:
-      - CMDARGS=--listen 127.0.0.1 --port 8890   # Arguments for launch_both.py.
+      - CMDARGS=--api-port 8890 --listen 127.0.0.1   # Arguments for launch.py.
       - DATADIR=/content/data   # Directory which stores models, outputs dir
       - config_path=/content/data/config.txt
       - config_example_path=/content/data/config_modification_tutorial.txt
@@ -26,8 +36,6 @@ services:
       - path_outputs=/content/app/outputs/    # Warning: If it is not located under '/content/app', you can't see history log!
     volumes:
       - fooocus-data:/content/data
-      #- ./models:/import/models   # Once you import files, you don't need to mount again.
-      #- ./outputs:/import/outputs  # Once you import files, you don't need to mount again.
     tty: true
     deploy:
       resources:

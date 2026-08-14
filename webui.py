@@ -3,6 +3,7 @@ import random
 import os
 import json
 import time
+import traceback
 import shared
 import modules.config
 import fooocus_version
@@ -15,7 +16,7 @@ import modules.style_sorter as style_sorter
 import modules.meta_parser
 import args_manager
 import copy
-import launch
+import launch_webui as launch
 from modules.sdxl_styles import legal_style_names
 from modules.private_logger import get_current_html_path
 from modules.ui_gradio_extensions import reload_javascript
@@ -32,22 +33,33 @@ def get_task(*args):
     return worker.AsyncTask(args=args)
 
 def generate_clicked(task: worker.AsyncTask):
-    # outputs=[progress_html, progress_window, progress_gallery, gallery]
+    # outputs=[progress_html, progress_window, progress_gallery, gallery,
+    #          generate_button, stop_button, skip_button, state_is_generating]
 
     if len(task.args) == 0:
         return
 
+    def reset_buttons():
+        # single place that returns the UI to the idle layout: Generate shown,
+        # Stop/Skip hidden, busy lock released
+        return gr.update(visible=True, interactive=True), \
+            gr.update(visible=False, interactive=False), \
+            gr.update(visible=False, interactive=False), \
+            False
+
     def yield_done(message=None):
-        # single reset point for every terminal state (finish/error/timeout);
-        # clears the task so a stale one cannot be re-run and collapses the UI
-        # back to the "idle" layout
+        # single reset point for every terminal state (finish/error/timeout):
+        # clears the task so a stale one cannot be re-run, hides the progress
+        # UI and brings the input field and buttons back, whether the task
+        # finished, was cancelled or failed
         task.args = []
-        if message is None:
-            return gr.update(visible=False), gr.update(visible=False), gr.update(visible=False), gr.update()
-        return gr.update(visible=True, value=modules.html.make_progress_html(1, message)), \
-            gr.update(visible=True, value=None), \
-            gr.update(visible=False, value=None), \
-            gr.update(visible=False)
+        if message is not None:
+            print(f'[Fooosti] {message}')
+        return gr.update(visible=False), \
+            gr.update(visible=False), \
+            gr.update(visible=False), \
+            gr.update(visible=True), \
+            *reset_buttons()
 
     execution_start_time = time.perf_counter()
     finished = False
@@ -55,63 +67,74 @@ def generate_clicked(task: worker.AsyncTask):
     yield gr.update(visible=True, value=modules.html.make_progress_html(1, 'Waiting for task to start ...')), \
         gr.update(visible=True, value=None), \
         gr.update(visible=False, value=None), \
-        gr.update(visible=False)
+        gr.update(visible=False), \
+        gr.update(), gr.update(), gr.update(), gr.update()
 
     worker.async_tasks.append(task)
 
     watchdog_seconds = constants.FOOOSTI_GENERATION_TIMEOUT
 
-    while not finished:
-        time.sleep(0.01)
-        if time.perf_counter() - execution_start_time > watchdog_seconds:
-            # abort the stuck generation: interrupt first, then kill the worker
-            # so VRAM/RAM are actually freed and the next run gets a fresh one
-            worker.request_interrupt('stop')
-            worker.kill_worker()
-            yield yield_done('Generation timed out')
-            finished = True
-            break
-        if len(task.yields) > 0:
-            flag, product = task.yields.pop(0)
-            if flag == 'preview':
-
-                # help bad internet connection by skipping duplicated preview
-                if len(task.yields) > 0:  # if we have the next item
-                    if task.yields[0][0] == 'preview':   # if the next item is also a preview
-                        # print('Skipped one preview for better internet connection.')
-                        continue
-
-                percentage, title, image = product
-                yield gr.update(visible=True, value=modules.html.make_progress_html(percentage, title)), \
-                    gr.update(visible=True, value=image) if image is not None else gr.update(), \
-                    gr.update(), \
-                    gr.update(visible=False)
-            if flag == 'results':
-                yield gr.update(visible=True), \
-                    gr.update(visible=True), \
-                    gr.update(visible=True, value=product), \
-                    gr.update(visible=False)
-            if flag == 'finish':
-                if not args_manager.args.disable_enhance_output_sorting:
-                    product = sort_enhance_images(product, task)
-
-                yield gr.update(visible=False), \
-                    gr.update(visible=False), \
-                    gr.update(visible=False), \
-                    gr.update(visible=True, value=product)
-                finished = True
-                task.args = []
-
-                # delete Fooocus temp images, only keep gradio temp images
-                if args_manager.args.disable_image_log:
-                    for filepath in product:
-                        if isinstance(filepath, str) and os.path.exists(filepath):
-                            os.remove(filepath)
-            if flag == 'error':
-                message = product if isinstance(product, str) else 'Generation failed'
-                yield yield_done(message)
+    try:
+        while not finished:
+            time.sleep(0.01)
+            if time.perf_counter() - execution_start_time > watchdog_seconds:
+                # abort the stuck generation: interrupt first, then kill the worker
+                # so VRAM/RAM are actually freed and the next run gets a fresh one
+                worker.request_interrupt('stop')
+                worker.kill_worker()
+                yield yield_done('Generation timed out')
                 finished = True
                 break
+            if len(task.yields) > 0:
+                flag, product = task.yields.pop(0)
+                if flag == 'preview':
+
+                    # help bad internet connection by skipping duplicated preview
+                    if len(task.yields) > 0:  # if we have the next item
+                        if task.yields[0][0] == 'preview':   # if the next item is also a preview
+                            # print('Skipped one preview for better internet connection.')
+                            continue
+
+                    percentage, title, image = product
+                    yield gr.update(visible=True, value=modules.html.make_progress_html(percentage, title)), \
+                        gr.update(visible=True, value=image) if image is not None else gr.update(), \
+                        gr.update(), \
+                        gr.update(visible=False), \
+                        gr.update(), gr.update(), gr.update(), gr.update()
+                if flag == 'results':
+                    yield gr.update(visible=True), \
+                        gr.update(visible=True), \
+                        gr.update(visible=True, value=product), \
+                        gr.update(visible=False), \
+                        gr.update(), gr.update(), gr.update(), gr.update()
+                if flag == 'finish':
+                    if not args_manager.args.disable_enhance_output_sorting:
+                        product = sort_enhance_images(product, task)
+
+                    yield gr.update(visible=False), \
+                        gr.update(visible=False), \
+                        gr.update(visible=False), \
+                        gr.update(visible=True, value=product), \
+                        *reset_buttons()
+                    finished = True
+                    task.args = []
+
+                    # delete Fooocus temp images, only keep gradio temp images
+                    if args_manager.args.disable_image_log:
+                        for filepath in product:
+                            if isinstance(filepath, str) and os.path.exists(filepath):
+                                os.remove(filepath)
+                if flag == 'error':
+                    # cancelled/failed: a cancel is not an error — reset the UI
+                    # to the idle layout just like a clean finish
+                    message = product if isinstance(product, str) else 'Generation failed'
+                    yield yield_done(message)
+                    finished = True
+                    break
+    except Exception:
+        traceback.print_exc()
+        yield yield_done('Internal error, please retry')
+        return
 
     execution_time = time.perf_counter() - execution_start_time
     print(f'Total time: {execution_time:.2f} seconds')
@@ -1083,13 +1106,13 @@ with shared.gradio_root:
         metadata_import_button.click(trigger_metadata_import, inputs=[metadata_input_image, state_is_generating], outputs=load_data_outputs, queue=False, show_progress=True) \
             .then(style_sorter.sort_styles, inputs=style_selections, outputs=style_selections, queue=False, show_progress=False)
 
-        generate_button.click(lambda: (gr.update(visible=True, interactive=True), gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False), [], True),
+        generate_button.click(lambda: (gr.update(visible=True, interactive=True), gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False), gr.update(), True),
                               outputs=[stop_button, skip_button, generate_button, gallery, state_is_generating]) \
             .then(fn=refresh_seed, inputs=[seed_random, image_seed], outputs=image_seed) \
             .then(fn=get_task, inputs=ctrls, outputs=currentTask) \
-            .then(fn=generate_clicked, inputs=currentTask, outputs=[progress_html, progress_window, progress_gallery, gallery]) \
-            .then(lambda: (gr.update(visible=True, interactive=True), gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False), False),
-                  outputs=[generate_button, stop_button, skip_button, state_is_generating]) \
+            .then(fn=generate_clicked, inputs=currentTask,
+                  outputs=[progress_html, progress_window, progress_gallery, gallery,
+                           generate_button, stop_button, skip_button, state_is_generating]) \
             .then(fn=update_history_link, outputs=history_link) \
             .then(fn=lambda: None, _js='playNotification').then(fn=lambda: None, _js='refresh_grid_delayed')
 
