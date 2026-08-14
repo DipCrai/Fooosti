@@ -19,7 +19,7 @@ services:
     # host (bridge ports + loopback bind would make both unreachable)
     network_mode: host
     environment:
-      - CMDARGS=--api-port 8890 --listen 127.0.0.1   # Arguments for launch.py.
+      - CMDARGS=--api-port 8890 --webui-port 7865 --listen 127.0.0.1   # Arguments for launch.py.
       - DATADIR=/content/data   # Directory which stores models, outputs dir
       - config_path=/content/data/config.txt
       - config_example_path=/content/data/config_modification_tutorial.txt
