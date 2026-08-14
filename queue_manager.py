@@ -90,18 +90,39 @@ def _cancel_idle_timer():
             idle_timer = None
 
 
+def _reap(proc):
+    """Reap a terminated worker so it cannot linger as a zombie."""
+    if proc is None:
+        return
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=10)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 def _terminate_worker():
     global worker, worker_ready, worker_busy
     with state_lock:
         if worker is None:
             return
-        try:
-            worker.proc.terminate()
-        except Exception:
-            pass
+        proc = worker.proc
         worker = None
         worker_ready = False
         worker_busy = False
+    try:
+        proc.terminate()
+    except Exception:
+        pass
+    _reap(proc)
 
 
 def _start_worker():
@@ -279,6 +300,7 @@ def _client_reader(client):
 def _worker_reader(child):
     for msg in _read_lines(child.proc.stdout):
         _on_worker_message(msg)
+    _reap(child.proc)
     _on_worker_eof()
 
 
