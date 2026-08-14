@@ -4,7 +4,7 @@ A1111-compatible HTTP API served by FastAPI. Default port **8890**, interactive 
 
 - Base URL: `http://<host>:8890`
 - All `/sdapi/v1/*` endpoints are protected by the API token (see [Authentication](#authentication)).
-- Generation is single-slot: a request while another one is running returns **429**.
+- Generation is queued: the API shares the single worker with the WebUI through the queue manager. A request while another one is running waits in the FIFO queue instead of failing.
 - The API is wired for the model selected via `POST /sdapi/v1/options` (used by Open WebUI) or the `default_model` key in `config.txt`.
 
 ## Authentication
@@ -120,8 +120,8 @@ Request:
 | `batch_size` | int | 1–8 |
 | `cfg_scale` | float | 1.0–30.0 |
 | `seed` | int | `-1` = random |
-| `sampler_name` | string | sampler list (see UI Debug Tools) |
-| `scheduler_name` | string | scheduler list (see UI Debug Tools) |
+| `sampler_name` | string | any known sampler, e.g. `euler`, `dpmpp_2m_sde` |
+| `scheduler_name` | string | any known scheduler, e.g. `simple`, `karras` |
 | `style_selections` | string[] | style presets |
 | `performance` | string | e.g. `Speed`, `Quality` |
 | `base_model_name` | string | checkpoint filename only; path components are stripped |
@@ -141,7 +141,8 @@ Response:
 ```
 
 - `images` — array of base64-encoded data URIs (one per batch).
-- Errors: `429` if generation already in progress, `500` with `{"detail": "..."}` on failure or timeout.
+- Errors: `500` with `{"detail": "..."}` on failure or timeout.
+- The request waits in the queue while another generation is running (no `429`); the timeout includes queue wait time.
 - Generation timeout default: 7200 s (`FOOOSTI_GENERATION_TIMEOUT`).
 
 ### `GET /sdapi/v1/progress`

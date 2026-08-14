@@ -1,6 +1,8 @@
-# Fooocus on Docker
+# Fooosti on Docker
 
 The docker image is based on NVIDIA CUDA 12.4 and PyTorch 2.1, see [Dockerfile](Dockerfile) and [requirements_docker.txt](requirements_docker.txt) for details.
+
+This is a fork of Fooocus tuned to run as a background service: the image runs `launch.py`, which starts the WebUI (7865), the API (8890) and a shared generation worker through a single queue manager. The image is built locally from this repository — there is no published image to pull, so start with [Building the container locally](#building-the-container-locally).
 
 ## Requirements
 
@@ -11,15 +13,21 @@ The docker image is based on NVIDIA CUDA 12.4 and PyTorch 2.1, see [Dockerfile](
 
 **More information in the [notes](#notes).**
 
-### Running with Docker Compose
+### Running with Docker Compose (recommended)
 
 1. Clone this repository
-2. Run the docker container with `docker compose up`.
+2. Run `docker compose up -d --build`.
+
+Web UI: http://localhost:7865 · API: http://localhost:8890 (docs at `/docs`) · data in the `fooocus-data` volume.
+
+Set `CMDARGS=--only-api` or `CMDARGS=--only-webui` in `docker-compose.yml` to run only one part of the stack.
 
 ### Running with Docker
 
+The Docker and Podman commands below are identical except for the runtime flags.
+
 ```sh
-docker run -p 7865:7865 -v fooocus-data:/content/data -it \
+docker run -p 7865:7865 -p 8890:8890 -v fooocus-data:/content/data -it \
 --gpus all \
 -e CMDARGS=--listen \
 -e DATADIR=/content/data \
@@ -35,31 +43,23 @@ docker run -p 7865:7865 -v fooocus-data:/content/data -it \
 -e path_clip_vision=/content/data/models/clip_vision/ \
 -e path_fooocus_expansion=/content/data/models/prompt_expansion/fooocus_expansion/ \
 -e path_outputs=/content/app/outputs/ \
-ghcr.io/lllyasviel/fooocus
+fooosti:latest
 ```
+
 ### Running with Podman
 
+Podman uses the same flags as the `docker run` command above, with the runtime flags replaced:
+
 ```sh
-podman run -p 7865:7865 -v fooocus-data:/content/data -it \
---security-opt=no-new-privileges --cap-drop=ALL --security-opt label=type:nvidia_container_t --device=nvidia.com/gpu=all \
--e CMDARGS=--listen \
--e DATADIR=/content/data \
--e config_path=/content/data/config.txt \
--e config_example_path=/content/data/config_modification_tutorial.txt \
--e path_checkpoints=/content/data/models/checkpoints/ \
--e path_loras=/content/data/models/loras/ \
--e path_embeddings=/content/data/models/embeddings/ \
--e path_vae_approx=/content/data/models/vae_approx/ \
--e path_upscale_models=/content/data/models/upscale_models/ \
--e path_inpaint=/content/data/models/inpaint/ \
--e path_controlnet=/content/data/models/controlnet/ \
--e path_clip_vision=/content/data/models/clip_vision/ \
--e path_fooocus_expansion=/content/data/models/prompt_expansion/fooocus_expansion/ \
--e path_outputs=/content/app/outputs/ \
-ghcr.io/lllyasviel/fooocus
+podman run -p 7865:7865 -p 8890:8890 -v fooocus-data:/content/data -it \
+--security-opt=no-new-privileges --cap-drop=ALL \
+--security-opt label=type:nvidia_container_t --device=nvidia.com/gpu=all \
+fooosti:latest
 ```
 
-When you see the message  `Use the app with http://0.0.0.0:7865/` in the console, you can access the URL in your browser.
+(plus the same `-e` environment flags as the Docker command.)
+
+When you see the message `Use the app with http://0.0.0.0:7865/` in the console, you can access the URL in your browser.
 
 Your models and outputs are stored in the `fooocus-data` volume, which, depending on OS, is stored in `/var/lib/docker/volumes/` (or `~/.local/share/containers/storage/volumes/` when using `podman`).
 
@@ -69,12 +69,12 @@ Clone the repository first, and open a terminal in the folder.
 
 Build with `docker`:
 ```sh
-docker build . -t fooocus
+docker build . -t fooosti:latest
 ```
 
 Build with `podman`:
 ```sh
-podman build . -t fooocus
+podman build . -t fooosti:latest
 ```
 
 ## Details
@@ -108,14 +108,17 @@ Since `/content/data` is a persistent volume folder, your files will be persiste
 
 ### Environments
 
-You can change `config.txt` parameters by using environment variables.
-**The priority of using the environments is higher than the values defined in `config.txt`, and they will be saved to the `config_modification_tutorial.txt`**
+You can change `config.txt` parameters by using environment variables. Environment variables take priority over the values in `config.txt`. On startup, the Python config module writes `config_modification_tutorial.txt` as a reference of all recognised keys.
 
-Docker specified environments are there. They are used by 'entrypoint.sh'
+Docker specified environments are there. They are used by 'entrypoint_api.sh'
 |Environment|Details|
 |-|-|
 |DATADIR|'/content/data' location.|
-|CMDARGS|Arguments for [entry_with_update.py](entry_with_update.py) which is called by [entrypoint.sh](entrypoint.sh)|
+|CMDARGS|Arguments for [launch.py](launch.py) which is called by [entrypoint_api.sh](entrypoint_api.sh). e.g. `--api-port 8890 --webui-port 7865 --listen 127.0.0.1`, `--only-api`, `--only-webui`|
+|FOOOSTI_API_TOKEN|Optional API auth token (see [API.md](API.md#authentication))|
+|FOOOSTI_KEEPALIVE_MINUTES|How long the worker stays loaded after a task; `0` = unload after every task|
+|FOOOSTI_GENERATION_TIMEOUT|API generation timeout in seconds (default 7200)|
+|FOOOSTI_WEBUI|Set to `0` to disable the WebUI entirely|
 |config_path|'config.txt' location|
 |config_example_path|'config_modification_tutorial.txt' location|
 |HF_MIRROR| huggingface mirror site domain| 

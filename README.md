@@ -4,9 +4,9 @@ Fooosti is a self-hosted fork of [Fooocus](https://github.com/lllyasviel/Fooocus
 
 ## Why a fork?
 
-- **Runs idle for almost nothing.** Generation happens in a separate subprocess that is spawned per task and torn down when done, so the main process sits nearly idle in between — no tens of gigabytes pinned in VRAM while you do nothing else on the GPU.
-  - The worker lifetime is controlled by `FOOOSTI_KEEPALIVE_MINUTES` in `docker-compose.yml` (`0` = unload the worker after every task).
-- **A real API.** FastAPI server on port `8890` with A1111-compatible `/sdapi/v1/*` endpoints — so it plugs straight into [Open WebUI](https://github.com/open-webui/open-webui) (or any other A1111 client) as a drop-in backend. See [API.md](API.md) for endpoints, request templates and auth.
+- **One process owns everything.** A single `queue_manager` process launches the WebUI, the API and the generation worker (a subprocess) — no fragile chain of scripts to keep alive.
+- **Runs idle for almost nothing.** Generation happens in a worker subprocess that is spawned per task and torn down when done, so the main process sits nearly idle in between — no tens of gigabytes pinned in VRAM while you do nothing else on the GPU. The worker lifetime is controlled by the `FOOOSTI_KEEPALIVE_MINUTES` env var (`0` = unload the worker after every task).
+- **A real API.** FastAPI server on port `8890` with A1111-compatible `/sdapi/v1/*` endpoints — so it plugs straight into [Open WebUI](https://github.com/open-webui/open-webui) (or any other A1111 client) as a drop-in backend. API requests are queued and processed one at a time by the single worker. See [API.md](API.md) for endpoints, request templates and auth.
 - **Local prompt translation & enhancement.** Non-English prompts are rewritten into detailed English SD prompts by a local LLM — **Qwen2.5-1.5B-Instruct-abliterated**, downloaded from [HuggingFace](https://huggingface.co/huihui-ai/Qwen2.5-1.5B-Instruct-abliterated). Works on top of the stock Fooocus V2 expansion. Fully configurable via `config.txt`: `enable_prompt_translator` disables it entirely, `prompt_translator_enhance_english` also enhances English prompts.
 - **Redesigned UI.** Custom CSS and JS on top of the Gradio interface, UI settings persisted across restarts.
 
@@ -28,13 +28,21 @@ docker compose up -d --build
 
 - Web UI (Gradio): http://localhost:7865
 - API (FastAPI): http://localhost:8890 (interactive docs at `/docs`)
-- Data lives on the persistent `./data:/content/data` volume — checkpoints, LoRAs, outputs, config and the translator model survive container rebuilds.
+- Data lives on the persistent `fooocus-data` Docker volume (mounted at `/content/data`) — checkpoints, LoRAs, outputs, config and the translator model survive container rebuilds.
 
-Drop `.safetensors` checkpoints into `data/models/checkpoints/`, press **Refresh All Files** in the UI (Models tab, bottom of the right column), and you're done.
+Drop `.safetensors` checkpoints into the volume with `docker compose cp model.safetensors app:/content/data/models/checkpoints/`, press **Refresh All Files** in the UI (Models tab, bottom of the right column), and you're done.
+
+To run only one part of the stack, set `CMDARGS=--only-api` or `CMDARGS=--only-webui` in `docker-compose.yml`.
 
 ## Auth
 
-The API can be locked with `FOOOSTI_API_TOKEN` in `docker-compose.yml`. When set, every `/sdapi/v1/*` request must send the token in the `x-api-token` header. Empty token = unauthenticated. Details: [API.md](API.md#authentication).
+The API can be locked with the `FOOOSTI_API_TOKEN` env var in `docker-compose.yml` (optional; empty by default). When set, every `/sdapi/v1/*` request must send the token in the `x-api-token` header. Empty token = unauthenticated. Details: [API.md](API.md#authentication).
+
+## More docs
+
+- [API.md](API.md) — endpoints, request templates, auth.
+- [docker.md](docker.md) — running with plain Docker, Podman.
+- [Upstream Fooocus README](https://github.com/lllyasviel/Fooocus/blob/main/readme.md) — original docs, install guides, FAQ and troubleshooting (swap, VRAM, CUDA errors).
 
 ## License
 
