@@ -14,7 +14,7 @@ Fooosti is a self-hosted fork of [Fooocus](https://github.com/lllyasviel/Fooocus
 
 | Fullscreen | Medium screen | Mobile screen |
 |------------|---------------|---------------|
-| ![alt text](image-1.png) | ![alt text](image-2.png) | ![alt text](image-3.png) |
+| <img src="image-1.png" height="420"> | <img src="image-2.png" height="420"> | <img src="image-3.png" height="420"> |
 
 ## Quick start (Docker)
 
