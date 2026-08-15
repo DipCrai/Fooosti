@@ -115,6 +115,7 @@ def _terminate_worker():
         if worker is None:
             return
         proc = worker.proc
+        _fail_current('Worker stopped or crashed')
         worker = None
         worker_ready = False
         worker_busy = False
@@ -138,12 +139,26 @@ def _start_worker():
     threading.Thread(target=_worker_reader, args=(worker,), daemon=True).start()
 
 
+def _fail_current(reason):
+    global current
+    with state_lock:
+        if current is None:
+            return
+        tid = current['id']
+        src = owners.pop(tid, None)
+        client = clients.get(src)
+        if client is not None:
+            client.send({'type': 'error', 'id': tid, 'message': reason, 'results': []})
+        current = None
+
+
 def _ensure_worker():
     with state_lock:
         if worker is not None and worker.proc.poll() is None:
             return
         if worker is not None:
-            # dead worker reference: clean bookkeeping before respawn
+            # dead worker reference: fail its in-flight task before respawn
+            _fail_current('Worker stopped or crashed')
             worker_ready = False
             worker_busy = False
         _start_worker()
@@ -158,7 +173,7 @@ def _assign():
         if not worker_ready:
             return
         task = queue.popleft()
-        current = {'id': task['id'], 'source': task['source']}
+        current = {'id': task['id'], 'source': task['source'], 'worker': worker}
         owners[task['id']] = task['source']
         worker_busy = True
         _cancel_idle_timer()
@@ -216,19 +231,15 @@ def _on_worker_message(msg):
             client.send(msg.get('event', {}))
 
 
-def _on_worker_eof():
-    global worker, worker_ready, worker_busy, current
+def _on_worker_eof(child):
+    global worker, worker_ready, worker_busy
     with state_lock:
-        worker_ready = False
-        worker_busy = False
-        if current is not None:
-            tid = current['id']
-            src = owners.pop(tid, None)
-            client = clients.get(src)
-            if client is not None:
-                client.send({'type': 'error', 'id': tid, 'message': 'Worker stopped or crashed', 'results': []})
-            current = None
-        worker = None
+        if current is not None and current.get('worker') is child:
+            _fail_current('Worker stopped or crashed')
+        if worker is child:
+            worker_ready = False
+            worker_busy = False
+            worker = None
         _assign()
 
 
@@ -301,7 +312,7 @@ def _worker_reader(child):
     for msg in _read_lines(child.proc.stdout):
         _on_worker_message(msg)
     _reap(child.proc)
-    _on_worker_eof()
+    _on_worker_eof(child)
 
 
 def _start_client(name):
