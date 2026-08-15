@@ -214,7 +214,9 @@ def _on_worker_message(msg):
     if mtype == 'ready':
         with state_lock:
             worker_ready = True
-            _assign()
+            # if nothing is queued anymore (task was cancelled while the worker
+            # was still starting), terminate it instead of leaving a zombie
+            _assign_or_idle()
     elif mtype == 'task_done':
         with state_lock:
             tid = msg.get('id')

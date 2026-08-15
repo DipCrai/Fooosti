@@ -85,6 +85,7 @@ _busy_generating = False
 
 _state_lock = threading.RLock()
 _current = None  # {'source': ..., 'id': ..., 'task': AsyncTask}
+_pending_interrupt = None  # 'stop'|'skip' seen before the task was created
 _shutdown = threading.Event()
 _task_queue = []
 
@@ -306,7 +307,7 @@ def build_task_args(req: dict) -> list:
 
 
 def run_task_data(task_data: dict):
-    global _busy_generating, _current
+    global _busy_generating, _current, _pending_interrupt
     from modules import async_worker, private_logger
     from modules.async_worker import AsyncTask
     import ldm_patched.modules.model_management as model_management
@@ -337,6 +338,11 @@ def run_task_data(task_data: dict):
     with _state_lock:
         _current = {'source': source, 'id': task_id, 'task': task}
     _busy_generating = True
+    with _state_lock:
+        pending = _pending_interrupt
+        _pending_interrupt = None
+    if pending is not None and _current is not None:
+        _interrupt(_current, pending)
     # API tasks must not pollute the WebUI outputs/history: images go to the
     # scratch temp dir instead, where the API server removes them after reading
     if source == 'api':
@@ -399,6 +405,11 @@ def _on_message(msg):
         if action in ('stop', 'skip'):
             with _state_lock:
                 current = _current
+                if current is None:
+                    # the task has not been created yet (worker starting up or
+                    # still between tasks): remember the interrupt so it applies
+                    # as soon as the next task starts, instead of being dropped
+                    _pending_interrupt = action
             if current is not None:
                 _interrupt(current, action)
 
