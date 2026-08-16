@@ -32,9 +32,9 @@ mklink outputs
 import outputs
 
 # Start Fooosti: torch-free API main (8890) and optional WebUI (7865) via a
-# single queue manager + shared generation worker. Disable WebUI with
-# FOOOSTI_WEBUI=0, or run only one server with --only-api/--only-webui.
-echo '[Fooosti] starting launcher (api=8890 webui=7865, webui='"${FOOOSTI_WEBUI:-1}"')'
+# single daemon + shared generation worker. Choose what to serve with
+# CMDARGS: --serves both|webui|api.
+echo '[Fooosti] starting launcher (api=8890 webui=7865)'
 
 # Forward termination signals to the python launcher so the worker gets a
 # chance to release VRAM/RAM on docker stop instead of being SIGKILLed.

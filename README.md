@@ -33,7 +33,7 @@ docker compose up -d --build
 
 Drop `.safetensors` checkpoints into the volume with `docker compose cp model.safetensors app:/content/data/models/checkpoints/`, press **Refresh All Files** in the UI (Models tab, bottom of the right column), and you're done.
 
-To run only one part of the stack, set `CMDARGS=--only-api` or `CMDARGS=--only-webui` in `docker-compose.yml`.
+To run only one part of the stack, set `CMDARGS=--serves webui` or `CMDARGS=--serves api` in `docker-compose.yml` (`--serves both` is the default).
 
 ## Auth
 

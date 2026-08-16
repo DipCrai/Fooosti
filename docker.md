@@ -20,7 +20,7 @@ This is a fork of Fooocus tuned to run as a background service: the image runs `
 
 Web UI: http://localhost:7865 · API: http://localhost:8890 (docs at `/docs`) · data in the `fooocus-data` volume.
 
-Set `CMDARGS=--only-api` or `CMDARGS=--only-webui` in `docker-compose.yml` to run only one part of the stack.
+Set `CMDARGS=--serves webui` to run only the WebUI, or `CMDARGS=--serves api` for only the API. The default `both` runs both.
 
 ### Running with Docker
 
@@ -114,14 +114,13 @@ Environment variables recognised by the Python modules on startup:
 |Environment|Details|
 |-|-|
 |DATADIR|'/content/data' location.|
-|CMDARGS|Arguments for [fooosti.py](fooosti.py) which is called by [entrypoint_api.sh](entrypoint_api.sh). e.g. `--api-port 8890 --webui-port 7865 --listen 127.0.0.1`, `--only-api`, `--only-webui`|
+|CMDARGS|Arguments for [fooosti.py](fooosti.py) which is called by [entrypoint_api.sh](entrypoint_api.sh). e.g. `--api-port 8890 --webui-port 7865 --listen 127.0.0.1`, `--serves webui`, `--serves api`|
 |FOOOSTI_API_TOKEN|Optional API auth token (see [API.md](API.md#authentication))|
 |WORKER_KEEPALIVE_MINUTES|How long the worker stays loaded after a task; `0` = unload after every task; `-1` = always alive|
 |WEBUI_KEEPALIVE_MINUTES|WebUI client lifetime: `-1` = always alive (default), `0` = lazy (spawned on first visit, exits ~5s after the last browser tab closes), `N>0` = die after N minutes with no open tab|
 |API_KEEPALIVE_MINUTES|API client lifetime: `-1` = always alive (default), `0` = lazy (spawned on first request, exits ~2s after the last one), `N>0` = die after N minutes idle|
 |API_IDLE_SECONDS|In lazy API mode, delay after the last request before exiting (default 2)|
 |FOOOSTI_GENERATION_TIMEOUT|API generation timeout in seconds (default 7200)|
-|FOOOSTI_WEBUI|Set to `0` to disable the WebUI entirely|
 |config_path|'config.txt' location|
 |config_example_path|'config_modification_tutorial.txt' location|
 |HF_MIRROR| huggingface mirror site domain| 

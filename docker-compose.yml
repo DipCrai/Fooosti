@@ -6,8 +6,7 @@
 # The maintainer's own machine does NOT deploy from here: the live deployment
 # lives in ~/Fooosti (data/ + docker-compose.yml, build context = this repo).
 #
-# Useful flags (CMDARGS):  --only-api / --only-webui
-#   --api-port 8890  --webui-port 7865  --listen 127.0.0.1|0.0.0.0
+# Useful flags (CMDARGS):  --serves both|webui|api  --api-port 8890  --webui-port 7865  --listen 127.0.0.1|0.0.0.0
 #
 # Keepalive tuning (minutes, -1 = always alive, 0 = lazy, N>0 = die after N min
 # idle): WORKER_KEEPALIVE_MINUTES controls the generation worker,

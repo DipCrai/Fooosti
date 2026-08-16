@@ -596,8 +596,8 @@ def parse_args(argv):
     p.add_argument('--listen', type=str, default='127.0.0.1', nargs='?', const='0.0.0.0')
     p.add_argument('--api-port', type=int, default=8890)
     p.add_argument('--webui-port', type=int, default=7865)
-    p.add_argument('--only-api', action='store_true')
-    p.add_argument('--only-webui', action='store_true')
+    p.add_argument('--serves', choices=('both', 'webui', 'api'), default='both',
+                   help='what the daemon serves: both (default), only webui, only api')
     ns, rest = p.parse_known_args(argv)
     return ns, rest
 
@@ -611,14 +611,7 @@ def main():
     WEBUI_PORT = ns.webui_port
     LISTEN = ns.listen
 
-    if ns.only_api:
-        SERVERS = 'api'
-    elif ns.only_webui:
-        SERVERS = 'webui'
-    elif os.environ.get('FOOOSTI_WEBUI', '1') == '0':
-        SERVERS = 'api'
-    else:
-        SERVERS = 'both'
+    SERVERS = ns.serves
 
     WORKER_KEEPALIVE = _keepalive('WORKER_KEEPALIVE_MINUTES', 0.0)
     WEBUI_KEEPALIVE = _keepalive('WEBUI_KEEPALIVE_MINUTES', -1.0)
