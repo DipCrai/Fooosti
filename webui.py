@@ -2,6 +2,7 @@ import gradio as gr
 import random
 import os
 import json
+import threading
 import time
 import traceback
 import shared
@@ -1184,6 +1185,83 @@ def dump_default_english_config():
 
 
 # dump_default_english_config()
+
+
+# --- Lazy-idle: exit this process when the UI is unused so the daemon can
+# take the port back. Active in lazy mode only (WEBUI_KEEPALIVE_MINUTES != -1):
+# -1 = always alive, 0 = exit ~5s after the last browser tab closes, N>0 = exit
+# after N minutes without any open tab. An open browser tab keeps a websocket
+# open, so "connections > 0" means alive; the 5s grace absorbs quick reloads.
+_idle_ws = 0
+_idle_lock = threading.Lock()
+_idle_last_active = time.time()
+_IDLE_GRACE_SECONDS = 5.0
+
+
+class _WSGuard:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        global _idle_ws, _idle_last_active
+        if scope.get('type') == 'http':
+            with _idle_lock:
+                _idle_last_active = time.time()
+            await self.app(scope, receive, send)
+            return
+        if scope.get('type') != 'websocket':
+            await self.app(scope, receive, send)
+            return
+        with _idle_lock:
+            _idle_ws += 1
+            _idle_last_active = time.time()
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            with _idle_lock:
+                _idle_ws -= 1
+                _idle_last_active = time.time()
+
+
+def _install_idle_kill():
+    try:
+        keepalive = float(os.environ.get('WEBUI_KEEPALIVE_MINUTES', '-1') or '-1')
+    except ValueError:
+        keepalive = -1.0
+    if keepalive == -1:
+        return
+    idle_seconds = keepalive * 60 if keepalive > 0 else _IDLE_GRACE_SECONDS
+    from gradio import routes as _routes
+    _orig = _routes.App.create_app
+
+    def _create_app(blocks, app_kwargs=None):
+        app = _orig(blocks, app_kwargs=app_kwargs)
+        app.add_middleware(_WSGuard)
+        return app
+
+    _routes.App.create_app = _create_app
+
+    def _monitor():
+        global _idle_last_active
+        prev_ws = None
+        while True:
+            time.sleep(1)
+            with _idle_lock:
+                if _idle_ws > 0:
+                    _idle_last_active = time.time()
+                    if _idle_ws != prev_ws:
+                        print(f'[webui] ws count: {_idle_ws}', flush=True)
+                        prev_ws = _idle_ws
+                    continue
+                idle_for = time.time() - _idle_last_active
+            if idle_for >= idle_seconds:
+                print(f'[webui] no browser tabs for {idle_seconds:.0f}s, exiting', flush=True)
+                os._exit(0)
+
+    threading.Thread(target=_monitor, daemon=True).start()
+
+
+_install_idle_kill()
 
 shared.gradio_root.launch(
     inbrowser=args_manager.args.in_browser,

@@ -40,6 +40,6 @@ echo '[Fooosti] starting launcher (api=8890 webui=7865, webui='"${FOOOSTI_WEBUI:
 # chance to release VRAM/RAM on docker stop instead of being SIGKILLed.
 _term() { kill -TERM "$child" 2>/dev/null; }
 trap _term TERM INT
-python launch.py $* &
+python fooosti.py $* &
 child=$!
 wait "$child"

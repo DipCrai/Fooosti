@@ -2,7 +2,7 @@
 
 The docker image inherits CUDA 12.4 and PyTorch 2.1 from the upstream image `ghcr.io/lllyasviel/fooocus:edge` it is built on; see [Dockerfile](Dockerfile) and [requirements_docker.txt](requirements_docker.txt) for details.
 
-This is a fork of Fooocus tuned to run as a background service: the image runs `launch.py`, which starts the WebUI (7865), the API (8890) and a shared generation worker through a single queue manager. The image is built locally from this repository (no published `fooosti` image); the build pulls the upstream `fooocus:edge` base, see [Building the container locally](#building-the-container-locally).
+This is a fork of Fooocus tuned to run as a background service: the image runs `fooosti.py`, which starts the WebUI (7865), the API (8890) and a shared generation worker through a single daemon. The image is built locally from this repository (no published `fooosti` image); the build pulls the upstream `fooocus:edge` base, see [Building the container locally](#building-the-container-locally).
 
 ## Requirements
 
@@ -114,9 +114,12 @@ Environment variables recognised by the Python modules on startup:
 |Environment|Details|
 |-|-|
 |DATADIR|'/content/data' location.|
-|CMDARGS|Arguments for [launch.py](launch.py) which is called by [entrypoint_api.sh](entrypoint_api.sh). e.g. `--api-port 8890 --webui-port 7865 --listen 127.0.0.1`, `--only-api`, `--only-webui`|
+|CMDARGS|Arguments for [fooosti.py](fooosti.py) which is called by [entrypoint_api.sh](entrypoint_api.sh). e.g. `--api-port 8890 --webui-port 7865 --listen 127.0.0.1`, `--only-api`, `--only-webui`|
 |FOOOSTI_API_TOKEN|Optional API auth token (see [API.md](API.md#authentication))|
-|FOOOSTI_KEEPALIVE_MINUTES|How long the worker stays loaded after a task; `0` = unload after every task|
+|WORKER_KEEPALIVE_MINUTES|How long the worker stays loaded after a task; `0` = unload after every task; `-1` = always alive|
+|WEBUI_KEEPALIVE_MINUTES|WebUI client lifetime: `-1` = always alive (default), `0` = lazy (spawned on first visit, exits ~5s after the last browser tab closes), `N>0` = die after N minutes with no open tab|
+|API_KEEPALIVE_MINUTES|API client lifetime: `-1` = always alive (default), `0` = lazy (spawned on first request, exits ~2s after the last one), `N>0` = die after N minutes idle|
+|API_IDLE_SECONDS|In lazy API mode, delay after the last request before exiting (default 2)|
 |FOOOSTI_GENERATION_TIMEOUT|API generation timeout in seconds (default 7200)|
 |FOOOSTI_WEBUI|Set to `0` to disable the WebUI entirely|
 |config_path|'config.txt' location|

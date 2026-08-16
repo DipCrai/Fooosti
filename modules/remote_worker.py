@@ -1,8 +1,8 @@
-"""WebUI-side client of the queue manager.
+"""WebUI-side client of the fooosti daemon.
 
 Keeps the interface webui.py already uses (AsyncTask, async_tasks,
 request_interrupt, kill_worker) but replaces the file-backed queue with
-stdio JSON-lines IPC to queue_manager.py (see modules/ipc.py). Events from the
+stdio JSON-lines IPC to fooosti.py (see modules/ipc.py). Events from the
 worker arrive on stdin and are routed to the matching AsyncTask.
 """
 
@@ -59,6 +59,7 @@ def _dispatch(task, ev):
         task.processing = False
         task.yields.append(['error', ev.get('message') or 'Generation failed'])
         _cleanup_task(task)
+        ipc.trim_memory()
     elif etype == 'finish':
         task.should_enhance = ev.get('should_enhance', False)
         task.enhance_stats = ev.get('enhance_stats', {})
@@ -66,10 +67,12 @@ def _dispatch(task, ev):
         task.processing = False
         task.yields.append(['finish', ev.get('results', [])])
         _cleanup_task(task)
+        ipc.trim_memory()
     elif etype == 'cancelled':
         task.processing = False
         task.yields.append(['error', 'Task cancelled'])
         _cleanup_task(task)
+        ipc.trim_memory()
 
 
 def _on_message(msg):

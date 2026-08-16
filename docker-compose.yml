@@ -1,13 +1,20 @@
 # Base compose for running the service from a clone of this repo.
 #   docker compose up -d --build
-# Starts the queue manager + shared generation worker + API (8890) + WebUI
-# (7865), all inside one container (see launch.py).
+# Starts the fooosti daemon + shared generation worker + API (8890) + WebUI
+# (7865), all inside one container.
 #
 # The maintainer's own machine does NOT deploy from here: the live deployment
 # lives in ~/Fooosti (data/ + docker-compose.yml, build context = this repo).
 #
 # Useful flags (CMDARGS):  --only-api / --only-webui
 #   --api-port 8890  --webui-port 7865  --listen 127.0.0.1|0.0.0.0
+#
+# Keepalive tuning (minutes, -1 = always alive, 0 = lazy, N>0 = die after N min
+# idle): WORKER_KEEPALIVE_MINUTES controls the generation worker,
+# WEBUI_KEEPALIVE_MINUTES / API_KEEPALIVE_MINUTES control the two clients.
+# With 0 the clients are lazy: the daemon holds their port and spawns them on
+# the first request. Remove the variables for always-alive clients (more
+# responsive, more memory).
 volumes:
   fooocus-data:
 
@@ -19,7 +26,10 @@ services:
     # host (bridge ports + loopback bind would make both unreachable)
     network_mode: host
     environment:
-      - CMDARGS=--api-port 8890 --webui-port 7865 --listen 127.0.0.1   # Arguments for launch.py.
+      - CMDARGS=--api-port 8890 --webui-port 7865 --listen 127.0.0.1   # Arguments for fooosti.py.
+      - WORKER_KEEPALIVE_MINUTES=0
+      - WEBUI_KEEPALIVE_MINUTES=0
+      - API_KEEPALIVE_MINUTES=0
       - DATADIR=/content/data   # Directory which stores models, outputs dir
       - config_path=/content/data/config.txt
       - config_example_path=/content/data/config_modification_tutorial.txt

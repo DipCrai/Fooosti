@@ -32,6 +32,6 @@ import outputs
 # Start application (queue manager + servers)
 _term() { kill -TERM "$child" 2>/dev/null; }
 trap _term TERM INT
-python launch.py $* &
+python fooosti.py $* &
 child=$!
 wait "$child"

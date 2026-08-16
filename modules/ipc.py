@@ -1,6 +1,6 @@
-"""Stdio JSON-lines IPC for queue-manager children.
+"""Stdio JSON-lines IPC for fooosti children.
 
-Every child of queue_manager.py (webui/api clients and the generation worker)
+Every child of fooosti.py (webui/api clients and the generation worker)
 talks to the manager over its own stdin/stdout: messages from the manager are
 read on stdin, messages to the manager are written on stdout. Child log output
 is redirected to stderr so it can never corrupt the protocol.
@@ -142,6 +142,28 @@ def _deserialize_value(a):
 
 def _deserialize_args(args):
     return [_deserialize_value(a) for a in args]
+
+
+def trim_memory():
+    """Return freed heap memory to the OS after heavy work (task results).
+
+    Python keeps freed blocks in the allocator arenas and glibc rarely returns
+    them to the kernel, so RSS creeps up with every generation and only drops
+    on process restart. gc.collect() releases cycles, then malloc_trim(0) tells
+    glibc to release the top free arena. Non-glibc (macOS/Windows) has no
+    malloc_trim: just run the collector there.
+    """
+    import gc
+    try:
+        gc.collect()
+    except Exception:
+        pass
+    try:
+        import ctypes
+        libc = ctypes.CDLL('libc.so.6')
+        libc.malloc_trim(0)
+    except Exception:
+        pass
 
 
 def extract_task_payload(task_data: dict):

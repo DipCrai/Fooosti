@@ -175,6 +175,51 @@ def _submit_task(req: Txt2ImgRequest) -> dict:
 
 app = FastAPI(title='Fooosti', version='0.1.0')
 
+# --- Lazy-idle: track request activity and exit this process when the API is
+# unused so the daemon can take the port back. Active in lazy mode only
+# (API_KEEPALIVE_MINUTES != -1): with 0 it exits shortly after the last request,
+# with N>0 after N minutes without any request. In-flight requests keep it alive
+# (a generation may take minutes even though no new request arrived).
+_idle_inflight = 0
+_idle_last = time.time()
+
+
+@app.middleware('http')
+async def _idle_touch(request, call_next):
+    global _idle_last, _idle_inflight
+    _idle_inflight += 1
+    try:
+        return await call_next(request)
+    finally:
+        _idle_inflight -= 1
+        _idle_last = time.time()
+
+
+def _install_idle_kill():
+    try:
+        keepalive = float(os.environ.get('API_KEEPALIVE_MINUTES', '-1') or '-1')
+    except ValueError:
+        keepalive = -1.0
+    if keepalive == -1:
+        return
+    idle_seconds = keepalive * 60 if keepalive > 0 else \
+        float(os.environ.get('API_IDLE_SECONDS', '2') or '2')
+
+    def _monitor():
+        global _idle_last, _idle_inflight
+        while True:
+            time.sleep(1)
+            if _idle_inflight > 0:
+                continue
+            if time.time() - _idle_last >= idle_seconds:
+                print(f'[api] no requests for {idle_seconds:.0f}s, exiting', flush=True)
+                os._exit(0)
+
+    threading.Thread(target=_monitor, daemon=True).start()
+
+
+_install_idle_kill()
+
 
 @app.get('/health')
 def health():
@@ -320,4 +365,5 @@ async def txt2img(req: Txt2ImgRequest):
         'parameters': req.model_dump(),
         'info': json.dumps({'prompt': req.prompt}),
     }
+    ipc.trim_memory()
     return JSONResponse(result)

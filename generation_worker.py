@@ -70,7 +70,7 @@ except Exception as e:
 config.update_files()
 
 import modules.memory
-KEEPALIVE_MINUTES = int(os.environ.get('FOOOSTI_KEEPALIVE_MINUTES', '0') or '0')
+KEEPALIVE_MINUTES = int(os.environ.get('WORKER_KEEPALIVE_MINUTES', '0') or '0')
 modules.memory.KEEP_WARM = KEEPALIVE_MINUTES > 0
 print(f'[Fooosti] worker keepalive={KEEPALIVE_MINUTES}min')
 

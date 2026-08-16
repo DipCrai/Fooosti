@@ -18,7 +18,7 @@ def release_all(force=False):
     if KEEP_WARM and not force:
         if not _keep_warm_warned:
             _keep_warm_warned = True
-            print('[Fooosti] WARNING: FOOOSTI_KEEPALIVE_MINUTES>0 keeps the worker warm, '
+            print('[Fooosti] WARNING: WORKER_KEEPALIVE_MINUTES>0 keeps the worker warm, '
                   '"memory free after each generation" is disabled', flush=True)
         return
 
