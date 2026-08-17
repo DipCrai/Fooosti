@@ -429,15 +429,19 @@ class LazyServer:
         Real page loads: HEAD (never real for us), GET with Sec-Fetch-Dest:
         document or Accept: text/html, or an Upgrade (gradio websocket).
         JS fetches (mode: no-cors) send Sec-Fetch-Dest: empty + Accept: */*
-        and are probes. POST and other methods are always real requests."""
+        and are probes. POST and other methods are always real requests.
+        GET /sdapi/* is always real (API clients like Open WebUI)."""
         if not data:
             return True
         head = data.split(b'\r\n', 1)[0].decode('latin-1', 'replace')
         parts = head.split(' ')
         method = parts[0].upper() if parts else ''
+        path = parts[1] if len(parts) > 1 else ''
         if method == 'HEAD':
             return True
         if method != 'GET':
+            return False
+        if path.startswith('/sdapi/'):
             return False
         headers = data.decode('latin-1', 'replace').lower()
         if '\r\nupgrade:' in headers:
