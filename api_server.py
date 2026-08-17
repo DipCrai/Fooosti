@@ -223,12 +223,13 @@ def _install_idle_kill():
 
     def _monitor():
         global _idle_last, _idle_inflight, _idle_seen
+        threshold = max(idle_seconds, _IDLE_TICK)
         while True:
             time.sleep(_IDLE_TICK)
             if _idle_inflight > 0 or not _idle_seen:
                 continue
-            if time.time() - _idle_last >= idle_seconds:
-                print(f'[api] no requests for {idle_seconds:.0f}s, exiting', flush=True)
+            if time.time() - _idle_last >= threshold:
+                print(f'[api] idle for {threshold:.1f}s, exiting', flush=True)
                 os._exit(0)
 
     threading.Thread(target=_monitor, daemon=True).start()
