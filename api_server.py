@@ -177,22 +177,39 @@ app = FastAPI(title='Fooosti', version='0.1.0')
 
 # --- Lazy-idle: track request activity and exit this process when the API is
 # unused so the daemon can take the port back. Active in lazy mode only
-# (API_KEEPALIVE_MINUTES != -1): with 0 it exits shortly after the last request,
-# with N>0 after N minutes without any request. In-flight requests keep it alive
-# (a generation may take minutes even though no new request arrived).
+# (API_KEEPALIVE_MINUTES != -1): with 0 it exits within one monitor tick after
+# the last response is fully sent, with N>0 after N minutes without any request.
+# In-flight requests (including the response body being sent) keep it alive,
+# because a generation may take minutes even though no new request arrived.
 _idle_inflight = 0
 _idle_last = time.time()
+_idle_seen = False
+_IDLE_TICK = float(os.environ.get('IDLE_TICK', '0.2') or '0.2')
 
 
-@app.middleware('http')
-async def _idle_touch(request, call_next):
-    global _idle_last, _idle_inflight
-    _idle_inflight += 1
-    try:
-        return await call_next(request)
-    finally:
-        _idle_inflight -= 1
-        _idle_last = time.time()
+class _IdleTouch:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        global _idle_last, _idle_inflight, _idle_seen
+        if scope.get('type') != 'http':
+            await self.app(scope, receive, send)
+            return
+        _idle_inflight += 1
+        _idle_seen = True
+        try:
+            async def _send(message):
+                await send(message)
+                if message.get('type') == 'http.response.body' \
+                        and not message.get('more_body', False):
+                    _idle_last = time.time()
+            await self.app(scope, receive, _send)
+        finally:
+            _idle_inflight -= 1
+
+
+app.add_middleware(_IdleTouch)
 
 
 def _install_idle_kill():
@@ -202,14 +219,13 @@ def _install_idle_kill():
         keepalive = -1.0
     if keepalive == -1:
         return
-    idle_seconds = keepalive * 60 if keepalive > 0 else \
-        float(os.environ.get('API_IDLE_SECONDS', '2') or '2')
+    idle_seconds = keepalive * 60 if keepalive > 0 else 0.0
 
     def _monitor():
-        global _idle_last, _idle_inflight
+        global _idle_last, _idle_inflight, _idle_seen
         while True:
-            time.sleep(1)
-            if _idle_inflight > 0:
+            time.sleep(_IDLE_TICK)
+            if _idle_inflight > 0 or not _idle_seen:
                 continue
             if time.time() - _idle_last >= idle_seconds:
                 print(f'[api] no requests for {idle_seconds:.0f}s, exiting', flush=True)

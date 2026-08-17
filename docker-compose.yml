@@ -11,6 +11,7 @@
 # Keepalive tuning (minutes, -1 = always alive, 0 = lazy, N>0 = die after N min
 # idle): WORKER_KEEPALIVE_MINUTES controls the generation worker,
 # WEBUI_KEEPALIVE_MINUTES / API_KEEPALIVE_MINUTES control the two clients.
+# IDLE_TICK (seconds, default 0.2) sets the idle-monitor poll interval.
 # With 0 the clients are lazy: the daemon holds their port and spawns them on
 # the first request. Remove the variables for always-alive clients (more
 # responsive, more memory).

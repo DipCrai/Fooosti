@@ -106,23 +106,32 @@ Since `/content/data` is a persistent volume folder, your files will be persiste
 |/content/data/models|The folder is symlinked to '/content/app/models'|
 |/content/data/outputs|The folder is symlinked to '/content/app/outputs'|
 
-### Environments
+### Command line flags (CMDARGS)
 
-You can change `config.txt` parameters by using environment variables. Environment variables take priority over the values in `config.txt`. On startup, the Python config module writes `config_modification_tutorial.txt` as a reference of all recognised keys.
+Flags are passed via `CMDARGS` in `docker-compose.yml` and only reach the daemon — they configure the daemon itself and are not inherited by its subprocesses. Keep them for daemon-only, startup-time settings:
 
-Environment variables recognised by the Python modules on startup:
+|Flag|Details|
+|-|-|
+|`--api-port`|API port (default 8890)|
+|`--webui-port`|WebUI port (default 7865)|
+|`--listen`|Bind address (default 127.0.0.1; `--listen` alone = `0.0.0.0`)|
+|`--serves`|What the daemon serves: `both` (default), `webui`, `api`|
+
+Example: `CMDARGS=--api-port 8890 --webui-port 7865 --listen 127.0.0.1 --serves both`
+
+### Environment variables
+
+Env vars are inherited by the daemon's subprocesses (worker, webui, api clients), so anything those processes must read lives here. They also cover build-time settings needed before Python starts (Dockerfile).
+
 |Environment|Details|
 |-|-|
-|DATADIR|'/content/data' location.|
-|CMDARGS|Arguments for [fooosti.py](fooosti.py) which is called by [entrypoint_api.sh](entrypoint_api.sh). e.g. `--api-port 8890 --webui-port 7865 --listen 127.0.0.1`, `--serves webui`, `--serves api`|
 |FOOOSTI_API_TOKEN|Optional API auth token (see [API.md](API.md#authentication))|
 |WORKER_KEEPALIVE_MINUTES|How long the worker stays loaded after a task; `0` = unload after every task; `-1` = always alive|
-|WEBUI_KEEPALIVE_MINUTES|WebUI client lifetime: `-1` = always alive (default), `0` = lazy (spawned on first visit, exits ~5s after the last browser tab closes), `N>0` = die after N minutes with no open tab|
-|API_KEEPALIVE_MINUTES|API client lifetime: `-1` = always alive (default), `0` = lazy (spawned on first request, exits ~2s after the last one), `N>0` = die after N minutes idle|
-|API_IDLE_SECONDS|In lazy API mode, delay after the last request before exiting (default 2)|
+|WEBUI_KEEPALIVE_MINUTES|WebUI client lifetime: `-1` = always alive (default), `0` = lazy (spawned on first visit, exits once the last browser tab closes and no generation is running), `N>0` = die after N minutes with no open tab|
+|API_KEEPALIVE_MINUTES|API client lifetime: `-1` = always alive (default), `0` = lazy (spawned on first request, exits once the last response is fully sent), `N>0` = die after N minutes idle|
+|IDLE_TICK|Idle-monitor poll interval in seconds (default 0.2), shared by webui and api — how quickly a closed tab / finished request is noticed|
 |FOOOSTI_GENERATION_TIMEOUT|API generation timeout in seconds (default 7200)|
-|config_path|'config.txt' location|
-|config_example_path|'config_modification_tutorial.txt' location|
+|DATADIR|'/content/data' location|
 |HF_MIRROR| huggingface mirror site domain| 
 
 You can also use the same json key names and values explained in the 'config_modification_tutorial.txt' as the environments.

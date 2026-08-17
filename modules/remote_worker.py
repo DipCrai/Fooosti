@@ -114,6 +114,11 @@ class _TaskList(list):
 async_tasks = _TaskList()
 
 
+def has_active_tasks():
+    with _lock:
+        return bool(_tasks)
+
+
 def request_interrupt(value):
     """Ask the queue manager to stop/skip every queued and running WebUI task.
     The manager decides what to abort, so the buttons never kill the worker."""

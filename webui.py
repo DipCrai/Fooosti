@@ -1189,13 +1189,16 @@ def dump_default_english_config():
 
 # --- Lazy-idle: exit this process when the UI is unused so the daemon can
 # take the port back. Active in lazy mode only (WEBUI_KEEPALIVE_MINUTES != -1):
-# -1 = always alive, 0 = exit ~5s after the last browser tab closes, N>0 = exit
-# after N minutes without any open tab. An open browser tab keeps a websocket
-# open, so "connections > 0" means alive; the 5s grace absorbs quick reloads.
+# -1 = always alive, 0 = exit as soon as there are no browser tabs and no
+# active generation, N>0 = exit after N minutes without any open tab. An open
+# browser tab keeps a websocket open, so "connections > 0" means alive; an
+# active generation (worker.has_active_tasks()) is never interrupted by idle.
+# The monitor polls every IDLE_TICK seconds, so a closed tab is noticed within
+# one tick. Shared by webui and api (IDLE_TICK env, seconds, default 0.2).
 _idle_ws = 0
 _idle_lock = threading.Lock()
 _idle_last_active = time.time()
-_IDLE_GRACE_SECONDS = 5.0
+_IDLE_TICK = float(os.environ.get('IDLE_TICK', '0.2') or '0.2')
 
 
 class _WSGuard:
@@ -1230,7 +1233,7 @@ def _install_idle_kill():
         keepalive = -1.0
     if keepalive == -1:
         return
-    idle_seconds = keepalive * 60 if keepalive > 0 else _IDLE_GRACE_SECONDS
+    idle_seconds = keepalive * 60 if keepalive > 0 else 0.0
     from gradio import routes as _routes
     _orig = _routes.App.create_app
 
@@ -1244,18 +1247,25 @@ def _install_idle_kill():
     def _monitor():
         global _idle_last_active
         prev_ws = None
+        ever_had_ws = False
         while True:
-            time.sleep(1)
+            time.sleep(_IDLE_TICK)
             with _idle_lock:
                 if _idle_ws > 0:
                     _idle_last_active = time.time()
+                    ever_had_ws = True
                     if _idle_ws != prev_ws:
                         print(f'[webui] ws count: {_idle_ws}', flush=True)
                         prev_ws = _idle_ws
                     continue
-                idle_for = time.time() - _idle_last_active
-            if idle_for >= idle_seconds:
-                print(f'[webui] no browser tabs for {idle_seconds:.0f}s, exiting', flush=True)
+            if worker.has_active_tasks():
+                continue
+            if idle_seconds > 0:
+                if time.time() - _idle_last_active >= idle_seconds:
+                    print(f'[webui] no browser tabs for {idle_seconds:.0f}s, exiting', flush=True)
+                    os._exit(0)
+            elif ever_had_ws:
+                print('[webui] last browser tab closed, exiting', flush=True)
                 os._exit(0)
 
     threading.Thread(target=_monitor, daemon=True).start()
